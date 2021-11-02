@@ -1,0 +1,20 @@
+name: 'Yandex Cloud Lockbox'
+description: 'GitHub Action to fetch secret from Yandex Cloud Lockbox.'
+author: 'Nikolay Matrosov'
+inputs:
+  yc-sa-json-credentials:
+    required: true
+    description: 'Json containing authorized key for Service Account. More info https://cloud.yandex.ru/docs/container-registry/operations/authentication#sa-json'
+  secret-id:
+    required: true
+    description: 'ID of the Lockbox secret'
+  version-id:
+    required: false
+    description: 'Optional id of the secret version.'
+
+branding:
+  color: blue
+  icon: lock
+runs:
+  using: 'node12'
+  main: 'dist/index.js'
