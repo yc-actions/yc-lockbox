@@ -1,6 +1,6 @@
 {
   "name": "yc-actions-yc-lockbox",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "GitHub Action to fetch secret from Yandex Cloud Lockbox.",
   "main": "lib/main.js",
   "scripts": {
