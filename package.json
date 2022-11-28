@@ -30,7 +30,7 @@
     "@nikolay.matrosov/yc-ts-sdk": "^1.6.4"
   },
   "devDependencies": {
-    "@types/mustache": "^4.2.1",
+    "@types/mustache": "^4.2.2",
     "@types/node": "^18.11.9",
     "@typescript-eslint/eslint-plugin": "^5.42.1",
     "@typescript-eslint/parser": "^5.42.1",
