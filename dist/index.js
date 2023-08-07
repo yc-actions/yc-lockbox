@@ -1285,6 +1285,19 @@ class HttpClientResponse {
             }));
         });
     }
+    readBodyBuffer() {
+        return __awaiter(this, void 0, void 0, function* () {
+            return new Promise((resolve) => __awaiter(this, void 0, void 0, function* () {
+                const chunks = [];
+                this.message.on('data', (chunk) => {
+                    chunks.push(chunk);
+                });
+                this.message.on('end', () => {
+                    resolve(Buffer.concat(chunks));
+                });
+            }));
+        });
+    }
 }
 exports.HttpClientResponse = HttpClientResponse;
 function isHttps(requestUrl) {
@@ -1789,7 +1802,13 @@ function getProxyUrl(reqUrl) {
         }
     })();
     if (proxyVar) {
-        return new URL(proxyVar);
+        try {
+            return new URL(proxyVar);
+        }
+        catch (_a) {
+            if (!proxyVar.startsWith('http://') && !proxyVar.startsWith('https://'))
+                return new URL(`http://${proxyVar}`);
+        }
     }
     else {
         return undefined;
@@ -1799,6 +1818,10 @@ exports.getProxyUrl = getProxyUrl;
 function checkBypass(reqUrl) {
     if (!reqUrl.hostname) {
         return false;
+    }
+    const reqHost = reqUrl.hostname;
+    if (isLoopbackAddress(reqHost)) {
+        return true;
     }
     const noProxy = process.env['no_proxy'] || process.env['NO_PROXY'] || '';
     if (!noProxy) {
@@ -1825,13 +1848,24 @@ function checkBypass(reqUrl) {
         .split(',')
         .map(x => x.trim().toUpperCase())
         .filter(x => x)) {
-        if (upperReqHosts.some(x => x === upperNoProxyItem)) {
+        if (upperNoProxyItem === '*' ||
+            upperReqHosts.some(x => x === upperNoProxyItem ||
+                x.endsWith(`.${upperNoProxyItem}`) ||
+                (upperNoProxyItem.startsWith('.') &&
+                    x.endsWith(`${upperNoProxyItem}`)))) {
             return true;
         }
     }
     return false;
 }
 exports.checkBypass = checkBypass;
+function isLoopbackAddress(host) {
+    const hostLower = host.toLowerCase();
+    return (hostLower === 'localhost' ||
+        hostLower.startsWith('127.') ||
+        hostLower.startsWith('[::1]') ||
+        hostLower.startsWith('[0:0:0:0:0:0:0:1]'));
+}
 //# sourceMappingURL=proxy.js.map
 
 /***/ }),
@@ -1963,6 +1997,7 @@ class BackoffTimeout {
     }
     runTimer(delay) {
         var _a, _b;
+        clearTimeout(this.timerId);
         this.timerId = setTimeout(() => {
             this.callback();
             this.running = false;
@@ -2040,88 +2075,6 @@ exports.BackoffTimeout = BackoffTimeout;
 
 /***/ }),
 
-/***/ 6380:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
-
-"use strict";
-
-/*
- * Copyright 2019 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CallCredentialsFilterFactory = exports.CallCredentialsFilter = void 0;
-const filter_1 = __nccwpck_require__(3392);
-const constants_1 = __nccwpck_require__(634);
-const uri_parser_1 = __nccwpck_require__(5974);
-class CallCredentialsFilter extends filter_1.BaseFilter {
-    constructor(channel, stream) {
-        var _a, _b;
-        super();
-        this.channel = channel;
-        this.stream = stream;
-        this.channel = channel;
-        this.stream = stream;
-        const splitPath = stream.getMethod().split('/');
-        let serviceName = '';
-        /* The standard path format is "/{serviceName}/{methodName}", so if we split
-         * by '/', the first item should be empty and the second should be the
-         * service name */
-        if (splitPath.length >= 2) {
-            serviceName = splitPath[1];
-        }
-        const hostname = (_b = (_a = uri_parser_1.splitHostPort(stream.getHost())) === null || _a === void 0 ? void 0 : _a.host) !== null && _b !== void 0 ? _b : 'localhost';
-        /* Currently, call credentials are only allowed on HTTPS connections, so we
-         * can assume that the scheme is "https" */
-        this.serviceUrl = `https://${hostname}/${serviceName}`;
-    }
-    async sendMetadata(metadata) {
-        const credentials = this.stream.getCredentials();
-        const credsMetadata = credentials.generateMetadata({
-            service_url: this.serviceUrl,
-        });
-        const resultMetadata = await metadata;
-        try {
-            resultMetadata.merge(await credsMetadata);
-        }
-        catch (error) {
-            this.stream.cancelWithStatus(constants_1.Status.UNAUTHENTICATED, `Failed to retrieve auth metadata with error: ${error.message}`);
-            return Promise.reject('Failed to retrieve auth metadata');
-        }
-        if (resultMetadata.get('authorization').length > 1) {
-            this.stream.cancelWithStatus(constants_1.Status.INTERNAL, '"authorization" metadata cannot have multiple values');
-            return Promise.reject('"authorization" metadata cannot have multiple values');
-        }
-        return resultMetadata;
-    }
-}
-exports.CallCredentialsFilter = CallCredentialsFilter;
-class CallCredentialsFilterFactory {
-    constructor(channel) {
-        this.channel = channel;
-        this.channel = channel;
-    }
-    createFilter(callStream) {
-        return new CallCredentialsFilter(this.channel, callStream);
-    }
-}
-exports.CallCredentialsFilterFactory = CallCredentialsFilterFactory;
-//# sourceMappingURL=call-credentials-filter.js.map
-
-/***/ }),
-
 /***/ 1426:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -2183,17 +2136,21 @@ class CallCredentials {
                             reject(err);
                             return;
                         }
+                        if (!headers) {
+                            reject(new Error('Headers not set by metadata plugin'));
+                            return;
+                        }
                         resolve(headers);
                     });
                 });
             }
-            getHeaders.then((headers) => {
+            getHeaders.then(headers => {
                 const metadata = new metadata_1.Metadata();
                 for (const key of Object.keys(headers)) {
                     metadata.add(key, headers[key]);
                 }
                 callback(null, metadata);
-            }, (err) => {
+            }, err => {
                 callback(err);
             });
         });
@@ -2210,7 +2167,7 @@ class ComposedCallCredentials extends CallCredentials {
     }
     async generateMetadata(options) {
         const base = new metadata_1.Metadata();
-        const generated = await Promise.all(this.creds.map((cred) => cred.generateMetadata(options)));
+        const generated = await Promise.all(this.creds.map(cred => cred.generateMetadata(options)));
         for (const gen of generated) {
             base.merge(gen);
         }
@@ -2278,13 +2235,13 @@ class EmptyCallCredentials extends CallCredentials {
 
 /***/ }),
 
-/***/ 8988:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ 8710:
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
 /*
- * Copyright 2019 gRPC authors.
+ * Copyright 2022 gRPC authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -2300,40 +2257,7 @@ class EmptyCallCredentials extends CallCredentials {
  *
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.Http2CallStream = exports.InterceptingListenerImpl = exports.isInterceptingListener = void 0;
-const http2 = __nccwpck_require__(5158);
-const os = __nccwpck_require__(2037);
-const constants_1 = __nccwpck_require__(634);
-const metadata_1 = __nccwpck_require__(3665);
-const stream_decoder_1 = __nccwpck_require__(6575);
-const logging = __nccwpck_require__(5993);
-const constants_2 = __nccwpck_require__(634);
-const TRACER_NAME = 'call_stream';
-const { HTTP2_HEADER_STATUS, HTTP2_HEADER_CONTENT_TYPE, NGHTTP2_CANCEL, } = http2.constants;
-/**
- * Should do approximately the same thing as util.getSystemErrorName but the
- * TypeScript types don't have that function for some reason so I just made my
- * own.
- * @param errno
- */
-function getSystemErrorName(errno) {
-    for (const [name, num] of Object.entries(os.constants.errno)) {
-        if (num === errno) {
-            return name;
-        }
-    }
-    return 'Unknown system error ' + errno;
-}
-function getMinDeadline(deadlineList) {
-    let minValue = Infinity;
-    for (const deadline of deadlineList) {
-        const deadlineMsecs = deadline instanceof Date ? deadline.getTime() : deadline;
-        if (deadlineMsecs < minValue) {
-            minValue = deadlineMsecs;
-        }
-    }
-    return minValue;
-}
+exports.InterceptingListenerImpl = exports.isInterceptingListener = void 0;
 function isInterceptingListener(listener) {
     return (listener.onReceiveMetadata !== undefined &&
         listener.onReceiveMetadata.length === 1);
@@ -2362,7 +2286,7 @@ class InterceptingListenerImpl {
     }
     onReceiveMetadata(metadata) {
         this.processingMetadata = true;
-        this.listener.onReceiveMetadata(metadata, (metadata) => {
+        this.listener.onReceiveMetadata(metadata, metadata => {
             this.processingMetadata = false;
             this.nextListener.onReceiveMetadata(metadata);
             this.processPendingMessage();
@@ -2374,7 +2298,7 @@ class InterceptingListenerImpl {
         /* If this listener processes messages asynchronously, the last message may
          * be reordered with respect to the status */
         this.processingMessage = true;
-        this.listener.onReceiveMessage(message, (msg) => {
+        this.listener.onReceiveMessage(message, msg => {
             this.processingMessage = false;
             if (this.processingMetadata) {
                 this.pendingMessage = msg;
@@ -2387,7 +2311,7 @@ class InterceptingListenerImpl {
         });
     }
     onReceiveStatus(status) {
-        this.listener.onReceiveStatus(status, (processedStatus) => {
+        this.listener.onReceiveStatus(status, processedStatus => {
             if (this.processingMetadata || this.processingMessage) {
                 this.pendingStatus = processedStatus;
             }
@@ -2398,584 +2322,39 @@ class InterceptingListenerImpl {
     }
 }
 exports.InterceptingListenerImpl = InterceptingListenerImpl;
-class Http2CallStream {
-    constructor(methodName, channel, options, filterStackFactory, channelCallCredentials, callNumber) {
-        this.methodName = methodName;
-        this.channel = channel;
-        this.options = options;
-        this.channelCallCredentials = channelCallCredentials;
-        this.callNumber = callNumber;
-        this.http2Stream = null;
-        this.pendingRead = false;
-        this.isWriteFilterPending = false;
-        this.pendingWrite = null;
-        this.pendingWriteCallback = null;
-        this.writesClosed = false;
-        this.decoder = new stream_decoder_1.StreamDecoder();
-        this.isReadFilterPending = false;
-        this.canPush = false;
-        /**
-         * Indicates that an 'end' event has come from the http2 stream, so there
-         * will be no more data events.
-         */
-        this.readsClosed = false;
-        this.statusOutput = false;
-        this.unpushedReadMessages = [];
-        this.unfilteredReadMessages = [];
-        // Status code mapped from :status. To be used if grpc-status is not received
-        this.mappedStatusCode = constants_1.Status.UNKNOWN;
-        // This is populated (non-null) if and only if the call has ended
-        this.finalStatus = null;
-        this.subchannel = null;
-        this.listener = null;
-        this.internalError = null;
-        this.configDeadline = Infinity;
-        this.statusWatchers = [];
-        this.streamEndWatchers = [];
-        this.callStatsTracker = null;
-        this.filterStack = filterStackFactory.createFilter(this);
-        this.credentials = channelCallCredentials;
-        this.disconnectListener = () => {
-            this.endCall({
-                code: constants_1.Status.UNAVAILABLE,
-                details: 'Connection dropped',
-                metadata: new metadata_1.Metadata(),
-            });
-        };
-        if (this.options.parentCall &&
-            this.options.flags & constants_1.Propagate.CANCELLATION) {
-            this.options.parentCall.on('cancelled', () => {
-                this.cancelWithStatus(constants_1.Status.CANCELLED, 'Cancelled by parent call');
-            });
-        }
-    }
-    outputStatus() {
-        /* Precondition: this.finalStatus !== null */
-        if (this.listener && !this.statusOutput) {
-            this.statusOutput = true;
-            const filteredStatus = this.filterStack.receiveTrailers(this.finalStatus);
-            this.trace('ended with status: code=' +
-                filteredStatus.code +
-                ' details="' +
-                filteredStatus.details +
-                '"');
-            this.statusWatchers.forEach(watcher => watcher(filteredStatus));
-            /* We delay the actual action of bubbling up the status to insulate the
-             * cleanup code in this class from any errors that may be thrown in the
-             * upper layers as a result of bubbling up the status. In particular,
-             * if the status is not OK, the "error" event may be emitted
-             * synchronously at the top level, which will result in a thrown error if
-             * the user does not handle that event. */
-            process.nextTick(() => {
-                var _a;
-                (_a = this.listener) === null || _a === void 0 ? void 0 : _a.onReceiveStatus(filteredStatus);
-            });
-            if (this.subchannel) {
-                this.subchannel.callUnref();
-                this.subchannel.removeDisconnectListener(this.disconnectListener);
-            }
-        }
-    }
-    trace(text) {
-        logging.trace(constants_2.LogVerbosity.DEBUG, TRACER_NAME, '[' + this.callNumber + '] ' + text);
-    }
-    /**
-     * On first call, emits a 'status' event with the given StatusObject.
-     * Subsequent calls are no-ops.
-     * @param status The status of the call.
-     */
-    endCall(status) {
-        /* If the status is OK and a new status comes in (e.g. from a
-         * deserialization failure), that new status takes priority */
-        if (this.finalStatus === null || this.finalStatus.code === constants_1.Status.OK) {
-            this.finalStatus = status;
-            this.maybeOutputStatus();
-        }
-        this.destroyHttp2Stream();
-    }
-    maybeOutputStatus() {
-        if (this.finalStatus !== null) {
-            /* The combination check of readsClosed and that the two message buffer
-             * arrays are empty checks that there all incoming data has been fully
-             * processed */
-            if (this.finalStatus.code !== constants_1.Status.OK ||
-                (this.readsClosed &&
-                    this.unpushedReadMessages.length === 0 &&
-                    this.unfilteredReadMessages.length === 0 &&
-                    !this.isReadFilterPending)) {
-                this.outputStatus();
-            }
-        }
-    }
-    push(message) {
-        this.trace('pushing to reader message of length ' +
-            (message instanceof Buffer ? message.length : null));
-        this.canPush = false;
-        process.nextTick(() => {
-            var _a;
-            /* If we have already output the status any later messages should be
-             * ignored, and can cause out-of-order operation errors higher up in the
-             * stack. Checking as late as possible here to avoid any race conditions.
-             */
-            if (this.statusOutput) {
-                return;
-            }
-            (_a = this.listener) === null || _a === void 0 ? void 0 : _a.onReceiveMessage(message);
-            this.maybeOutputStatus();
-        });
-    }
-    handleFilterError(error) {
-        this.cancelWithStatus(constants_1.Status.INTERNAL, error.message);
-    }
-    handleFilteredRead(message) {
-        /* If we the call has already ended with an error, we don't want to do
-         * anything with this message. Dropping it on the floor is correct
-         * behavior */
-        if (this.finalStatus !== null && this.finalStatus.code !== constants_1.Status.OK) {
-            this.maybeOutputStatus();
-            return;
-        }
-        this.isReadFilterPending = false;
-        if (this.canPush) {
-            this.http2Stream.pause();
-            this.push(message);
-        }
-        else {
-            this.trace('unpushedReadMessages.push message of length ' + message.length);
-            this.unpushedReadMessages.push(message);
-        }
-        if (this.unfilteredReadMessages.length > 0) {
-            /* nextMessage is guaranteed not to be undefined because
-               unfilteredReadMessages is non-empty */
-            const nextMessage = this.unfilteredReadMessages.shift();
-            this.filterReceivedMessage(nextMessage);
-        }
-    }
-    filterReceivedMessage(framedMessage) {
-        /* If we the call has already ended with an error, we don't want to do
-         * anything with this message. Dropping it on the floor is correct
-         * behavior */
-        if (this.finalStatus !== null && this.finalStatus.code !== constants_1.Status.OK) {
-            this.maybeOutputStatus();
-            return;
-        }
-        this.trace('filterReceivedMessage of length ' + framedMessage.length);
-        this.isReadFilterPending = true;
-        this.filterStack
-            .receiveMessage(Promise.resolve(framedMessage))
-            .then(this.handleFilteredRead.bind(this), this.handleFilterError.bind(this));
-    }
-    tryPush(messageBytes) {
-        if (this.isReadFilterPending) {
-            this.trace('unfilteredReadMessages.push message of length ' +
-                (messageBytes && messageBytes.length));
-            this.unfilteredReadMessages.push(messageBytes);
-        }
-        else {
-            this.filterReceivedMessage(messageBytes);
-        }
-    }
-    handleTrailers(headers) {
-        this.streamEndWatchers.forEach(watcher => watcher(true));
-        let headersString = '';
-        for (const header of Object.keys(headers)) {
-            headersString += '\t\t' + header + ': ' + headers[header] + '\n';
-        }
-        this.trace('Received server trailers:\n' + headersString);
-        let metadata;
-        try {
-            metadata = metadata_1.Metadata.fromHttp2Headers(headers);
-        }
-        catch (e) {
-            metadata = new metadata_1.Metadata();
-        }
-        const metadataMap = metadata.getMap();
-        let code = this.mappedStatusCode;
-        if (code === constants_1.Status.UNKNOWN &&
-            typeof metadataMap['grpc-status'] === 'string') {
-            const receivedStatus = Number(metadataMap['grpc-status']);
-            if (receivedStatus in constants_1.Status) {
-                code = receivedStatus;
-                this.trace('received status code ' + receivedStatus + ' from server');
-            }
-            metadata.remove('grpc-status');
-        }
-        let details = '';
-        if (typeof metadataMap['grpc-message'] === 'string') {
-            details = decodeURI(metadataMap['grpc-message']);
-            metadata.remove('grpc-message');
-            this.trace('received status details string "' + details + '" from server');
-        }
-        const status = { code, details, metadata };
-        // This is a no-op if the call was already ended when handling headers.
-        this.endCall(status);
-    }
-    writeMessageToStream(message, callback) {
-        var _a;
-        (_a = this.callStatsTracker) === null || _a === void 0 ? void 0 : _a.addMessageSent();
-        this.http2Stream.write(message, callback);
-    }
-    attachHttp2Stream(stream, subchannel, extraFilters, callStatsTracker) {
-        this.filterStack.push(extraFilters);
-        if (this.finalStatus !== null) {
-            stream.close(NGHTTP2_CANCEL);
-        }
-        else {
-            this.trace('attachHttp2Stream from subchannel ' + subchannel.getAddress());
-            this.http2Stream = stream;
-            this.subchannel = subchannel;
-            this.callStatsTracker = callStatsTracker;
-            subchannel.addDisconnectListener(this.disconnectListener);
-            subchannel.callRef();
-            stream.on('response', (headers, flags) => {
-                var _a;
-                let headersString = '';
-                for (const header of Object.keys(headers)) {
-                    headersString += '\t\t' + header + ': ' + headers[header] + '\n';
-                }
-                this.trace('Received server headers:\n' + headersString);
-                switch (headers[':status']) {
-                    // TODO(murgatroid99): handle 100 and 101
-                    case 400:
-                        this.mappedStatusCode = constants_1.Status.INTERNAL;
-                        break;
-                    case 401:
-                        this.mappedStatusCode = constants_1.Status.UNAUTHENTICATED;
-                        break;
-                    case 403:
-                        this.mappedStatusCode = constants_1.Status.PERMISSION_DENIED;
-                        break;
-                    case 404:
-                        this.mappedStatusCode = constants_1.Status.UNIMPLEMENTED;
-                        break;
-                    case 429:
-                    case 502:
-                    case 503:
-                    case 504:
-                        this.mappedStatusCode = constants_1.Status.UNAVAILABLE;
-                        break;
-                    default:
-                        this.mappedStatusCode = constants_1.Status.UNKNOWN;
-                }
-                if (flags & http2.constants.NGHTTP2_FLAG_END_STREAM) {
-                    this.handleTrailers(headers);
-                }
-                else {
-                    let metadata;
-                    try {
-                        metadata = metadata_1.Metadata.fromHttp2Headers(headers);
-                    }
-                    catch (error) {
-                        this.endCall({
-                            code: constants_1.Status.UNKNOWN,
-                            details: error.message,
-                            metadata: new metadata_1.Metadata(),
-                        });
-                        return;
-                    }
-                    try {
-                        const finalMetadata = this.filterStack.receiveMetadata(metadata);
-                        (_a = this.listener) === null || _a === void 0 ? void 0 : _a.onReceiveMetadata(finalMetadata);
-                    }
-                    catch (error) {
-                        this.endCall({
-                            code: constants_1.Status.UNKNOWN,
-                            details: error.message,
-                            metadata: new metadata_1.Metadata(),
-                        });
-                    }
-                }
-            });
-            stream.on('trailers', this.handleTrailers.bind(this));
-            stream.on('data', (data) => {
-                this.trace('receive HTTP/2 data frame of length ' + data.length);
-                const messages = this.decoder.write(data);
-                for (const message of messages) {
-                    this.trace('parsed message of length ' + message.length);
-                    this.callStatsTracker.addMessageReceived();
-                    this.tryPush(message);
-                }
-            });
-            stream.on('end', () => {
-                this.readsClosed = true;
-                this.maybeOutputStatus();
-            });
-            stream.on('close', () => {
-                /* Use process.next tick to ensure that this code happens after any
-                 * "error" event that may be emitted at about the same time, so that
-                 * we can bubble up the error message from that event. */
-                process.nextTick(() => {
-                    var _a;
-                    this.trace('HTTP/2 stream closed with code ' + stream.rstCode);
-                    /* If we have a final status with an OK status code, that means that
-                     * we have received all of the messages and we have processed the
-                     * trailers and the call completed successfully, so it doesn't matter
-                     * how the stream ends after that */
-                    if (((_a = this.finalStatus) === null || _a === void 0 ? void 0 : _a.code) === constants_1.Status.OK) {
-                        return;
-                    }
-                    let code;
-                    let details = '';
-                    switch (stream.rstCode) {
-                        case http2.constants.NGHTTP2_NO_ERROR:
-                            /* If we get a NO_ERROR code and we already have a status, the
-                             * stream completed properly and we just haven't fully processed
-                             * it yet */
-                            if (this.finalStatus !== null) {
-                                return;
-                            }
-                            code = constants_1.Status.INTERNAL;
-                            details = `Received RST_STREAM with code ${stream.rstCode}`;
-                            break;
-                        case http2.constants.NGHTTP2_REFUSED_STREAM:
-                            code = constants_1.Status.UNAVAILABLE;
-                            details = 'Stream refused by server';
-                            break;
-                        case http2.constants.NGHTTP2_CANCEL:
-                            code = constants_1.Status.CANCELLED;
-                            details = 'Call cancelled';
-                            break;
-                        case http2.constants.NGHTTP2_ENHANCE_YOUR_CALM:
-                            code = constants_1.Status.RESOURCE_EXHAUSTED;
-                            details = 'Bandwidth exhausted or memory limit exceeded';
-                            break;
-                        case http2.constants.NGHTTP2_INADEQUATE_SECURITY:
-                            code = constants_1.Status.PERMISSION_DENIED;
-                            details = 'Protocol not secure enough';
-                            break;
-                        case http2.constants.NGHTTP2_INTERNAL_ERROR:
-                            code = constants_1.Status.INTERNAL;
-                            if (this.internalError === null) {
-                                /* This error code was previously handled in the default case, and
-                                 * there are several instances of it online, so I wanted to
-                                 * preserve the original error message so that people find existing
-                                 * information in searches, but also include the more recognizable
-                                 * "Internal server error" message. */
-                                details = `Received RST_STREAM with code ${stream.rstCode} (Internal server error)`;
-                            }
-                            else {
-                                if (this.internalError.code === 'ECONNRESET' || this.internalError.code === 'ETIMEDOUT') {
-                                    code = constants_1.Status.UNAVAILABLE;
-                                    details = this.internalError.message;
-                                }
-                                else {
-                                    /* The "Received RST_STREAM with code ..." error is preserved
-                                     * here for continuity with errors reported online, but the
-                                     * error message at the end will probably be more relevant in
-                                     * most cases. */
-                                    details = `Received RST_STREAM with code ${stream.rstCode} triggered by internal client error: ${this.internalError.message}`;
-                                }
-                            }
-                            break;
-                        default:
-                            code = constants_1.Status.INTERNAL;
-                            details = `Received RST_STREAM with code ${stream.rstCode}`;
-                    }
-                    // This is a no-op if trailers were received at all.
-                    // This is OK, because status codes emitted here correspond to more
-                    // catastrophic issues that prevent us from receiving trailers in the
-                    // first place.
-                    this.endCall({ code, details, metadata: new metadata_1.Metadata() });
-                });
-            });
-            stream.on('error', (err) => {
-                /* We need an error handler here to stop "Uncaught Error" exceptions
-                 * from bubbling up. However, errors here should all correspond to
-                 * "close" events, where we will handle the error more granularly */
-                /* Specifically looking for stream errors that were *not* constructed
-                 * from a RST_STREAM response here:
-                 * https://github.com/nodejs/node/blob/8b8620d580314050175983402dfddf2674e8e22a/lib/internal/http2/core.js#L2267
-                 */
-                if (err.code !== 'ERR_HTTP2_STREAM_ERROR') {
-                    this.trace('Node error event: message=' +
-                        err.message +
-                        ' code=' +
-                        err.code +
-                        ' errno=' +
-                        getSystemErrorName(err.errno) +
-                        ' syscall=' +
-                        err.syscall);
-                    this.internalError = err;
-                }
-                this.streamEndWatchers.forEach(watcher => watcher(false));
-            });
-            if (!this.pendingRead) {
-                stream.pause();
-            }
-            if (this.pendingWrite) {
-                if (!this.pendingWriteCallback) {
-                    throw new Error('Invalid state in write handling code');
-                }
-                this.trace('sending data chunk of length ' +
-                    this.pendingWrite.length +
-                    ' (deferred)');
-                try {
-                    this.writeMessageToStream(this.pendingWrite, this.pendingWriteCallback);
-                }
-                catch (error) {
-                    this.endCall({
-                        code: constants_1.Status.UNAVAILABLE,
-                        details: `Write failed with error ${error.message}`,
-                        metadata: new metadata_1.Metadata()
-                    });
-                }
-            }
-            this.maybeCloseWrites();
-        }
-    }
-    start(metadata, listener) {
-        this.trace('Sending metadata');
-        this.listener = listener;
-        this.channel._startCallStream(this, metadata);
-        this.maybeOutputStatus();
-    }
-    destroyHttp2Stream() {
-        var _a;
-        // The http2 stream could already have been destroyed if cancelWithStatus
-        // is called in response to an internal http2 error.
-        if (this.http2Stream !== null && !this.http2Stream.destroyed) {
-            /* If the call has ended with an OK status, communicate that when closing
-             * the stream, partly to avoid a situation in which we detect an error
-             * RST_STREAM as a result after we have the status */
-            let code;
-            if (((_a = this.finalStatus) === null || _a === void 0 ? void 0 : _a.code) === constants_1.Status.OK) {
-                code = http2.constants.NGHTTP2_NO_ERROR;
-            }
-            else {
-                code = http2.constants.NGHTTP2_CANCEL;
-            }
-            this.trace('close http2 stream with code ' + code);
-            this.http2Stream.close(code);
-        }
-    }
-    cancelWithStatus(status, details) {
-        this.trace('cancelWithStatus code: ' + status + ' details: "' + details + '"');
-        this.endCall({ code: status, details, metadata: new metadata_1.Metadata() });
-    }
-    getDeadline() {
-        const deadlineList = [this.options.deadline];
-        if (this.options.parentCall && this.options.flags & constants_1.Propagate.DEADLINE) {
-            deadlineList.push(this.options.parentCall.getDeadline());
-        }
-        if (this.configDeadline) {
-            deadlineList.push(this.configDeadline);
-        }
-        return getMinDeadline(deadlineList);
-    }
-    getCredentials() {
-        return this.credentials;
-    }
-    setCredentials(credentials) {
-        this.credentials = this.channelCallCredentials.compose(credentials);
-    }
-    getStatus() {
-        return this.finalStatus;
-    }
-    getPeer() {
-        var _a, _b;
-        return (_b = (_a = this.subchannel) === null || _a === void 0 ? void 0 : _a.getAddress()) !== null && _b !== void 0 ? _b : this.channel.getTarget();
-    }
-    getMethod() {
-        return this.methodName;
-    }
-    getHost() {
-        return this.options.host;
-    }
-    setConfigDeadline(configDeadline) {
-        this.configDeadline = configDeadline;
-    }
-    addStatusWatcher(watcher) {
-        this.statusWatchers.push(watcher);
-    }
-    addStreamEndWatcher(watcher) {
-        this.streamEndWatchers.push(watcher);
-    }
-    addFilters(extraFilters) {
-        this.filterStack.push(extraFilters);
-    }
-    getCallNumber() {
-        return this.callNumber;
-    }
-    startRead() {
-        /* If the stream has ended with an error, we should not emit any more
-         * messages and we should communicate that the stream has ended */
-        if (this.finalStatus !== null && this.finalStatus.code !== constants_1.Status.OK) {
-            this.readsClosed = true;
-            this.maybeOutputStatus();
-            return;
-        }
-        this.canPush = true;
-        if (this.http2Stream === null) {
-            this.pendingRead = true;
-        }
-        else {
-            if (this.unpushedReadMessages.length > 0) {
-                const nextMessage = this.unpushedReadMessages.shift();
-                this.push(nextMessage);
-                return;
-            }
-            /* Only resume reading from the http2Stream if we don't have any pending
-             * messages to emit */
-            this.http2Stream.resume();
-        }
-    }
-    maybeCloseWrites() {
-        if (this.writesClosed &&
-            !this.isWriteFilterPending &&
-            this.http2Stream !== null) {
-            this.trace('calling end() on HTTP/2 stream');
-            this.http2Stream.end();
-        }
-    }
-    sendMessageWithContext(context, message) {
-        this.trace('write() called with message of length ' + message.length);
-        const writeObj = {
-            message,
-            flags: context.flags,
-        };
-        const cb = (error) => {
-            var _a, _b;
-            let code = constants_1.Status.UNAVAILABLE;
-            if (((_a = error) === null || _a === void 0 ? void 0 : _a.code) === 'ERR_STREAM_WRITE_AFTER_END') {
-                code = constants_1.Status.INTERNAL;
-            }
-            if (error) {
-                this.cancelWithStatus(code, `Write error: ${error.message}`);
-            }
-            (_b = context.callback) === null || _b === void 0 ? void 0 : _b.call(context);
-        };
-        this.isWriteFilterPending = true;
-        this.filterStack.sendMessage(Promise.resolve(writeObj)).then((message) => {
-            this.isWriteFilterPending = false;
-            if (this.http2Stream === null) {
-                this.trace('deferring writing data chunk of length ' + message.message.length);
-                this.pendingWrite = message.message;
-                this.pendingWriteCallback = cb;
-            }
-            else {
-                this.trace('sending data chunk of length ' + message.message.length);
-                try {
-                    this.writeMessageToStream(message.message, cb);
-                }
-                catch (error) {
-                    this.endCall({
-                        code: constants_1.Status.UNAVAILABLE,
-                        details: `Write failed with error ${error.message}`,
-                        metadata: new metadata_1.Metadata()
-                    });
-                }
-                this.maybeCloseWrites();
-            }
-        }, this.handleFilterError.bind(this));
-    }
-    halfClose() {
-        this.trace('end() called');
-        this.writesClosed = true;
-        this.maybeCloseWrites();
-    }
+//# sourceMappingURL=call-interface.js.map
+
+/***/ }),
+
+/***/ 380:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/*
+ * Copyright 2022 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getNextCallNumber = void 0;
+let nextCallNumber = 0;
+function getNextCallNumber() {
+    return nextCallNumber++;
 }
-exports.Http2CallStream = Http2CallStream;
-//# sourceMappingURL=call-stream.js.map
+exports.getNextCallNumber = getNextCallNumber;
+//# sourceMappingURL=call-number.js.map
 
 /***/ }),
 
@@ -3011,9 +2390,11 @@ const constants_1 = __nccwpck_require__(634);
  * error is not necessarily a problem in gRPC itself.
  * @param status
  */
-function callErrorFromStatus(status) {
+function callErrorFromStatus(status, callerStack) {
     const message = `${status.code} ${constants_1.Status[status.code]}: ${status.details}`;
-    return Object.assign(new Error(message), status);
+    const error = new Error(message);
+    const stack = `${error.stack}\nfor call at\n${callerStack}`;
+    return Object.assign(new Error(message), status, { stack });
 }
 exports.callErrorFromStatus = callErrorFromStatus;
 class ClientUnaryCallImpl extends events_1.EventEmitter {
@@ -3152,14 +2533,6 @@ function verifyIsBufferOrNull(obj, friendlyName) {
         throw new TypeError(`${friendlyName}, if provided, must be a Buffer.`);
     }
 }
-function bufferOrNullEqual(buf1, buf2) {
-    if (buf1 === null && buf2 === null) {
-        return true;
-    }
-    else {
-        return buf1 !== null && buf2 !== null && buf1.equals(buf2);
-    }
-}
 /**
  * A class that contains credentials for communicating over a channel, as well
  * as a set of per-call credentials, which are applied to every method call made
@@ -3195,8 +2568,8 @@ class ChannelCredentials {
         if (!privateKey && certChain) {
             throw new Error('Certificate chain must be given with accompanying private key');
         }
-        const secureContext = tls_1.createSecureContext({
-            ca: (_a = rootCerts !== null && rootCerts !== void 0 ? rootCerts : tls_helpers_1.getDefaultRootsData()) !== null && _a !== void 0 ? _a : undefined,
+        const secureContext = (0, tls_1.createSecureContext)({
+            ca: (_a = rootCerts !== null && rootCerts !== void 0 ? rootCerts : (0, tls_helpers_1.getDefaultRootsData)()) !== null && _a !== void 0 ? _a : undefined,
             key: privateKey !== null && privateKey !== void 0 ? privateKey : undefined,
             cert: certChain !== null && certChain !== void 0 ? certChain : undefined,
             ciphers: tls_helpers_1.CIPHER_SUITES,
@@ -3247,11 +2620,12 @@ class SecureChannelCredentialsImpl extends ChannelCredentials {
         this.secureContext = secureContext;
         this.verifyOptions = verifyOptions;
         this.connectionOptions = {
-            secureContext
+            secureContext,
         };
         // Node asserts that this option is a function, so we cannot pass undefined
         if (verifyOptions === null || verifyOptions === void 0 ? void 0 : verifyOptions.checkServerIdentity) {
-            this.connectionOptions.checkServerIdentity = verifyOptions.checkServerIdentity;
+            this.connectionOptions.checkServerIdentity =
+                verifyOptions.checkServerIdentity;
         }
     }
     compose(callCredentials) {
@@ -3271,7 +2645,8 @@ class SecureChannelCredentialsImpl extends ChannelCredentials {
         }
         if (other instanceof SecureChannelCredentialsImpl) {
             return (this.secureContext === other.secureContext &&
-                this.verifyOptions.checkServerIdentity === other.verifyOptions.checkServerIdentity);
+                this.verifyOptions.checkServerIdentity ===
+                    other.verifyOptions.checkServerIdentity);
         }
         else {
             return false;
@@ -3355,7 +2730,15 @@ exports.recognizedOptions = {
     'grpc.enable_http_proxy': true,
     'grpc.enable_channelz': true,
     'grpc.dns_min_time_between_resolutions_ms': true,
+    'grpc.enable_retries': true,
+    'grpc.per_rpc_retry_buffer_size': true,
+    'grpc.retry_buffer_size': true,
+    'grpc.max_connection_age_ms': true,
+    'grpc.max_connection_age_grace_ms': true,
     'grpc-node.max_session_memory': true,
+    'grpc.service_config_disable_resolution': true,
+    'grpc.client_idle_timeout_ms': true,
+    'grpc-node.tls_enable_trace': true,
 };
 function channelOptionsEqual(options1, options2) {
     const keys1 = Object.keys(options1).sort();
@@ -3401,55 +2784,10 @@ exports.channelOptionsEqual = channelOptionsEqual;
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ChannelImplementation = void 0;
-const call_stream_1 = __nccwpck_require__(8988);
 const channel_credentials_1 = __nccwpck_require__(4030);
-const resolving_load_balancer_1 = __nccwpck_require__(9192);
-const subchannel_pool_1 = __nccwpck_require__(9780);
-const picker_1 = __nccwpck_require__(1611);
-const constants_1 = __nccwpck_require__(634);
-const filter_stack_1 = __nccwpck_require__(6450);
-const call_credentials_filter_1 = __nccwpck_require__(6380);
-const deadline_filter_1 = __nccwpck_require__(1217);
-const compression_filter_1 = __nccwpck_require__(7616);
-const resolver_1 = __nccwpck_require__(1594);
-const logging_1 = __nccwpck_require__(5993);
-const max_message_size_filter_1 = __nccwpck_require__(659);
-const http_proxy_1 = __nccwpck_require__(4000);
-const uri_parser_1 = __nccwpck_require__(5974);
-const connectivity_state_1 = __nccwpck_require__(878);
-const channelz_1 = __nccwpck_require__(9975);
-/**
- * See https://nodejs.org/api/timers.html#timers_setinterval_callback_delay_args
- */
-const MAX_TIMEOUT_TIME = 2147483647;
-let nextCallNumber = 0;
-function getNewCallNumber() {
-    const callNumber = nextCallNumber;
-    nextCallNumber += 1;
-    if (nextCallNumber >= Number.MAX_SAFE_INTEGER) {
-        nextCallNumber = 0;
-    }
-    return callNumber;
-}
+const internal_channel_1 = __nccwpck_require__(9672);
 class ChannelImplementation {
     constructor(target, credentials, options) {
-        var _a, _b, _c, _d;
-        this.credentials = credentials;
-        this.options = options;
-        this.connectivityState = connectivity_state_1.ConnectivityState.IDLE;
-        this.currentPicker = new picker_1.UnavailablePicker();
-        /**
-         * Calls queued up to get a call config. Should only be populated before the
-         * first time the resolver returns a result, which includes the ConfigSelector.
-         */
-        this.configSelectionQueue = [];
-        this.pickQueue = [];
-        this.connectivityStateWatchers = [];
-        this.configSelector = null;
-        // Channelz info
-        this.channelzEnabled = true;
-        this.callTracker = new channelz_1.ChannelzCallTracker();
-        this.childrenTracker = new channelz_1.ChannelzChildrenTracker();
         if (typeof target !== 'string') {
             throw new TypeError('Channel target must be a string');
         }
@@ -3461,423 +2799,19 @@ class ChannelImplementation {
                 throw new TypeError('Channel options must be an object');
             }
         }
-        this.originalTarget = target;
-        const originalTargetUri = uri_parser_1.parseUri(target);
-        if (originalTargetUri === null) {
-            throw new Error(`Could not parse target name "${target}"`);
-        }
-        /* This ensures that the target has a scheme that is registered with the
-         * resolver */
-        const defaultSchemeMapResult = resolver_1.mapUriDefaultScheme(originalTargetUri);
-        if (defaultSchemeMapResult === null) {
-            throw new Error(`Could not find a default scheme for target name "${target}"`);
-        }
-        this.callRefTimer = setInterval(() => { }, MAX_TIMEOUT_TIME);
-        (_b = (_a = this.callRefTimer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
-        if (this.options['grpc.enable_channelz'] === 0) {
-            this.channelzEnabled = false;
-        }
-        this.channelzTrace = new channelz_1.ChannelzTrace();
-        if (this.channelzEnabled) {
-            this.channelzRef = channelz_1.registerChannelzChannel(target, () => this.getChannelzInfo());
-            this.channelzTrace.addTrace('CT_INFO', 'Channel created');
-        }
-        else {
-            // Dummy channelz ref that will never be used
-            this.channelzRef = {
-                kind: 'channel',
-                id: -1,
-                name: ''
-            };
-        }
-        if (this.options['grpc.default_authority']) {
-            this.defaultAuthority = this.options['grpc.default_authority'];
-        }
-        else {
-            this.defaultAuthority = resolver_1.getDefaultAuthority(defaultSchemeMapResult);
-        }
-        const proxyMapResult = http_proxy_1.mapProxyName(defaultSchemeMapResult, options);
-        this.target = proxyMapResult.target;
-        this.options = Object.assign({}, this.options, proxyMapResult.extraOptions);
-        /* The global boolean parameter to getSubchannelPool has the inverse meaning to what
-         * the grpc.use_local_subchannel_pool channel option means. */
-        this.subchannelPool = subchannel_pool_1.getSubchannelPool(((_c = options['grpc.use_local_subchannel_pool']) !== null && _c !== void 0 ? _c : 0) === 0);
-        const channelControlHelper = {
-            createSubchannel: (subchannelAddress, subchannelArgs) => {
-                const subchannel = this.subchannelPool.getOrCreateSubchannel(this.target, subchannelAddress, Object.assign({}, this.options, subchannelArgs), this.credentials);
-                if (this.channelzEnabled) {
-                    this.channelzTrace.addTrace('CT_INFO', 'Created subchannel or used existing subchannel', subchannel.getChannelzRef());
-                }
-                return subchannel;
-            },
-            updateState: (connectivityState, picker) => {
-                this.currentPicker = picker;
-                const queueCopy = this.pickQueue.slice();
-                this.pickQueue = [];
-                this.callRefTimerUnref();
-                for (const { callStream, callMetadata, callConfig, dynamicFilters } of queueCopy) {
-                    this.tryPick(callStream, callMetadata, callConfig, dynamicFilters);
-                }
-                this.updateState(connectivityState);
-            },
-            requestReresolution: () => {
-                // This should never be called.
-                throw new Error('Resolving load balancer should never call requestReresolution');
-            },
-            addChannelzChild: (child) => {
-                if (this.channelzEnabled) {
-                    this.childrenTracker.refChild(child);
-                }
-            },
-            removeChannelzChild: (child) => {
-                if (this.channelzEnabled) {
-                    this.childrenTracker.unrefChild(child);
-                }
-            }
-        };
-        this.resolvingLoadBalancer = new resolving_load_balancer_1.ResolvingLoadBalancer(this.target, channelControlHelper, options, (configSelector) => {
-            if (this.channelzEnabled) {
-                this.channelzTrace.addTrace('CT_INFO', 'Address resolution succeeded');
-            }
-            this.configSelector = configSelector;
-            /* We process the queue asynchronously to ensure that the corresponding
-             * load balancer update has completed. */
-            process.nextTick(() => {
-                const localQueue = this.configSelectionQueue;
-                this.configSelectionQueue = [];
-                this.callRefTimerUnref();
-                for (const { callStream, callMetadata } of localQueue) {
-                    this.tryGetConfig(callStream, callMetadata);
-                }
-                this.configSelectionQueue = [];
-            });
-        }, (status) => {
-            if (this.channelzEnabled) {
-                this.channelzTrace.addTrace('CT_WARNING', 'Address resolution failed with code ' + status.code + ' and details "' + status.details + '"');
-            }
-            if (this.configSelectionQueue.length > 0) {
-                this.trace('Name resolution failed with calls queued for config selection');
-            }
-            const localQueue = this.configSelectionQueue;
-            this.configSelectionQueue = [];
-            this.callRefTimerUnref();
-            for (const { callStream, callMetadata } of localQueue) {
-                if (callMetadata.getOptions().waitForReady) {
-                    this.callRefTimerRef();
-                    this.configSelectionQueue.push({ callStream, callMetadata });
-                }
-                else {
-                    callStream.cancelWithStatus(status.code, status.details);
-                }
-            }
-        });
-        this.filterStackFactory = new filter_stack_1.FilterStackFactory([
-            new call_credentials_filter_1.CallCredentialsFilterFactory(this),
-            new deadline_filter_1.DeadlineFilterFactory(this),
-            new max_message_size_filter_1.MaxMessageSizeFilterFactory(this.options),
-            new compression_filter_1.CompressionFilterFactory(this, this.options),
-        ]);
-        this.trace('Channel constructed with options ' + JSON.stringify(options, undefined, 2));
-        const error = new Error();
-        logging_1.trace(constants_1.LogVerbosity.DEBUG, 'channel_stacktrace', '(' + this.channelzRef.id + ') ' + 'Channel constructed \n' + ((_d = error.stack) === null || _d === void 0 ? void 0 : _d.substring(error.stack.indexOf('\n') + 1)));
-    }
-    getChannelzInfo() {
-        return {
-            target: this.originalTarget,
-            state: this.connectivityState,
-            trace: this.channelzTrace,
-            callTracker: this.callTracker,
-            children: this.childrenTracker.getChildLists()
-        };
-    }
-    trace(text, verbosityOverride) {
-        logging_1.trace(verbosityOverride !== null && verbosityOverride !== void 0 ? verbosityOverride : constants_1.LogVerbosity.DEBUG, 'channel', '(' + this.channelzRef.id + ') ' + uri_parser_1.uriToString(this.target) + ' ' + text);
-    }
-    callRefTimerRef() {
-        var _a, _b, _c, _d;
-        // If the hasRef function does not exist, always run the code
-        if (!((_b = (_a = this.callRefTimer).hasRef) === null || _b === void 0 ? void 0 : _b.call(_a))) {
-            this.trace('callRefTimer.ref | configSelectionQueue.length=' +
-                this.configSelectionQueue.length +
-                ' pickQueue.length=' +
-                this.pickQueue.length);
-            (_d = (_c = this.callRefTimer).ref) === null || _d === void 0 ? void 0 : _d.call(_c);
-        }
-    }
-    callRefTimerUnref() {
-        var _a, _b;
-        // If the hasRef function does not exist, always run the code
-        if (!this.callRefTimer.hasRef || this.callRefTimer.hasRef()) {
-            this.trace('callRefTimer.unref | configSelectionQueue.length=' +
-                this.configSelectionQueue.length +
-                ' pickQueue.length=' +
-                this.pickQueue.length);
-            (_b = (_a = this.callRefTimer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
-        }
-    }
-    pushPick(callStream, callMetadata, callConfig, dynamicFilters) {
-        this.pickQueue.push({ callStream, callMetadata, callConfig, dynamicFilters });
-        this.callRefTimerRef();
-    }
-    /**
-     * Check the picker output for the given call and corresponding metadata,
-     * and take any relevant actions. Should not be called while iterating
-     * over pickQueue.
-     * @param callStream
-     * @param callMetadata
-     */
-    tryPick(callStream, callMetadata, callConfig, dynamicFilters) {
-        var _a, _b;
-        const pickResult = this.currentPicker.pick({
-            metadata: callMetadata,
-            extraPickInfo: callConfig.pickInformation,
-        });
-        const subchannelString = pickResult.subchannel ?
-            '(' + pickResult.subchannel.getChannelzRef().id + ') ' + pickResult.subchannel.getAddress() :
-            '' + pickResult.subchannel;
-        this.trace('Pick result for call [' +
-            callStream.getCallNumber() +
-            ']: ' +
-            picker_1.PickResultType[pickResult.pickResultType] +
-            ' subchannel: ' +
-            subchannelString +
-            ' status: ' + ((_a = pickResult.status) === null || _a === void 0 ? void 0 : _a.code) +
-            ' ' + ((_b = pickResult.status) === null || _b === void 0 ? void 0 : _b.details));
-        switch (pickResult.pickResultType) {
-            case picker_1.PickResultType.COMPLETE:
-                if (pickResult.subchannel === null) {
-                    callStream.cancelWithStatus(constants_1.Status.UNAVAILABLE, 'Request dropped by load balancing policy');
-                    // End the call with an error
-                }
-                else {
-                    /* If the subchannel is not in the READY state, that indicates a bug
-                     * somewhere in the load balancer or picker. So, we log an error and
-                     * queue the pick to be tried again later. */
-                    if (pickResult.subchannel.getConnectivityState() !==
-                        connectivity_state_1.ConnectivityState.READY) {
-                        logging_1.log(constants_1.LogVerbosity.ERROR, 'Error: COMPLETE pick result subchannel ' +
-                            subchannelString +
-                            ' has state ' +
-                            connectivity_state_1.ConnectivityState[pickResult.subchannel.getConnectivityState()]);
-                        this.pushPick(callStream, callMetadata, callConfig, dynamicFilters);
-                        break;
-                    }
-                    /* We need to clone the callMetadata here because the transparent
-                     * retry code in the promise resolution handler use the same
-                     * callMetadata object, so it needs to stay unmodified */
-                    callStream.filterStack
-                        .sendMetadata(Promise.resolve(callMetadata.clone()))
-                        .then((finalMetadata) => {
-                        var _a, _b, _c;
-                        const subchannelState = pickResult.subchannel.getConnectivityState();
-                        if (subchannelState === connectivity_state_1.ConnectivityState.READY) {
-                            try {
-                                const pickExtraFilters = pickResult.extraFilterFactories.map(factory => factory.createFilter(callStream));
-                                (_a = pickResult.subchannel) === null || _a === void 0 ? void 0 : _a.getRealSubchannel().startCallStream(finalMetadata, callStream, [...dynamicFilters, ...pickExtraFilters]);
-                                /* If we reach this point, the call stream has started
-                                 * successfully */
-                                (_b = callConfig.onCommitted) === null || _b === void 0 ? void 0 : _b.call(callConfig);
-                                (_c = pickResult.onCallStarted) === null || _c === void 0 ? void 0 : _c.call(pickResult);
-                            }
-                            catch (error) {
-                                const errorCode = error.code;
-                                if (errorCode === 'ERR_HTTP2_GOAWAY_SESSION' ||
-                                    errorCode === 'ERR_HTTP2_INVALID_SESSION') {
-                                    /* An error here indicates that something went wrong with
-                                     * the picked subchannel's http2 stream right before we
-                                     * tried to start the stream. We are handling a promise
-                                     * result here, so this is asynchronous with respect to the
-                                     * original tryPick call, so calling it again is not
-                                     * recursive. We call tryPick immediately instead of
-                                     * queueing this pick again because handling the queue is
-                                     * triggered by state changes, and we want to immediately
-                                     * check if the state has already changed since the
-                                     * previous tryPick call. We do this instead of cancelling
-                                     * the stream because the correct behavior may be
-                                     * re-queueing instead, based on the logic in the rest of
-                                     * tryPick */
-                                    this.trace('Failed to start call on picked subchannel ' +
-                                        subchannelString +
-                                        ' with error ' +
-                                        error.message +
-                                        '. Retrying pick', constants_1.LogVerbosity.INFO);
-                                    this.tryPick(callStream, callMetadata, callConfig, dynamicFilters);
-                                }
-                                else {
-                                    this.trace('Failed to start call on picked subchanel ' +
-                                        subchannelString +
-                                        ' with error ' +
-                                        error.message +
-                                        '. Ending call', constants_1.LogVerbosity.INFO);
-                                    callStream.cancelWithStatus(constants_1.Status.INTERNAL, `Failed to start HTTP/2 stream with error: ${error.message}`);
-                                }
-                            }
-                        }
-                        else {
-                            /* The logic for doing this here is the same as in the catch
-                             * block above */
-                            this.trace('Picked subchannel ' +
-                                subchannelString +
-                                ' has state ' +
-                                connectivity_state_1.ConnectivityState[subchannelState] +
-                                ' after metadata filters. Retrying pick', constants_1.LogVerbosity.INFO);
-                            this.tryPick(callStream, callMetadata, callConfig, dynamicFilters);
-                        }
-                    }, (error) => {
-                        // We assume the error code isn't 0 (Status.OK)
-                        callStream.cancelWithStatus(typeof error.code === 'number' ? error.code : constants_1.Status.UNKNOWN, `Getting metadata from plugin failed with error: ${error.message}`);
-                    });
-                }
-                break;
-            case picker_1.PickResultType.QUEUE:
-                this.pushPick(callStream, callMetadata, callConfig, dynamicFilters);
-                break;
-            case picker_1.PickResultType.TRANSIENT_FAILURE:
-                if (callMetadata.getOptions().waitForReady) {
-                    this.pushPick(callStream, callMetadata, callConfig, dynamicFilters);
-                }
-                else {
-                    callStream.cancelWithStatus(pickResult.status.code, pickResult.status.details);
-                }
-                break;
-            case picker_1.PickResultType.DROP:
-                callStream.cancelWithStatus(pickResult.status.code, pickResult.status.details);
-                break;
-            default:
-                throw new Error(`Invalid state: unknown pickResultType ${pickResult.pickResultType}`);
-        }
-    }
-    removeConnectivityStateWatcher(watcherObject) {
-        const watcherIndex = this.connectivityStateWatchers.findIndex((value) => value === watcherObject);
-        if (watcherIndex >= 0) {
-            this.connectivityStateWatchers.splice(watcherIndex, 1);
-        }
-    }
-    updateState(newState) {
-        logging_1.trace(constants_1.LogVerbosity.DEBUG, 'connectivity_state', '(' + this.channelzRef.id + ') ' +
-            uri_parser_1.uriToString(this.target) +
-            ' ' +
-            connectivity_state_1.ConnectivityState[this.connectivityState] +
-            ' -> ' +
-            connectivity_state_1.ConnectivityState[newState]);
-        if (this.channelzEnabled) {
-            this.channelzTrace.addTrace('CT_INFO', connectivity_state_1.ConnectivityState[this.connectivityState] + ' -> ' + connectivity_state_1.ConnectivityState[newState]);
-        }
-        this.connectivityState = newState;
-        const watchersCopy = this.connectivityStateWatchers.slice();
-        for (const watcherObject of watchersCopy) {
-            if (newState !== watcherObject.currentState) {
-                if (watcherObject.timer) {
-                    clearTimeout(watcherObject.timer);
-                }
-                this.removeConnectivityStateWatcher(watcherObject);
-                watcherObject.callback();
-            }
-        }
-    }
-    tryGetConfig(stream, metadata) {
-        if (stream.getStatus() !== null) {
-            /* If the stream has a status, it has already finished and we don't need
-             * to take any more actions on it. */
-            return;
-        }
-        if (this.configSelector === null) {
-            /* This branch will only be taken at the beginning of the channel's life,
-             * before the resolver ever returns a result. So, the
-             * ResolvingLoadBalancer may be idle and if so it needs to be kicked
-             * because it now has a pending request. */
-            this.resolvingLoadBalancer.exitIdle();
-            this.configSelectionQueue.push({
-                callStream: stream,
-                callMetadata: metadata,
-            });
-            this.callRefTimerRef();
-        }
-        else {
-            const callConfig = this.configSelector(stream.getMethod(), metadata);
-            if (callConfig.status === constants_1.Status.OK) {
-                if (callConfig.methodConfig.timeout) {
-                    const deadline = new Date();
-                    deadline.setSeconds(deadline.getSeconds() + callConfig.methodConfig.timeout.seconds);
-                    deadline.setMilliseconds(deadline.getMilliseconds() +
-                        callConfig.methodConfig.timeout.nanos / 1000000);
-                    stream.setConfigDeadline(deadline);
-                    // Refreshing the filters makes the deadline filter pick up the new deadline
-                    stream.filterStack.refresh();
-                }
-                if (callConfig.dynamicFilterFactories.length > 0) {
-                    /* These dynamicFilters are the mechanism for implementing gRFC A39:
-                     * https://github.com/grpc/proposal/blob/master/A39-xds-http-filters.md
-                     * We run them here instead of with the rest of the filters because
-                     * that spec says "the xDS HTTP filters will run in between name
-                     * resolution and load balancing".
-                     *
-                     * We use the filter stack here to simplify the multi-filter async
-                     * waterfall logic, but we pass along the underlying list of filters
-                     * to avoid having nested filter stacks when combining it with the
-                     * original filter stack. We do not pass along the original filter
-                     * factory list because these filters may need to persist data
-                     * between sending headers and other operations. */
-                    const dynamicFilterStackFactory = new filter_stack_1.FilterStackFactory(callConfig.dynamicFilterFactories);
-                    const dynamicFilterStack = dynamicFilterStackFactory.createFilter(stream);
-                    dynamicFilterStack.sendMetadata(Promise.resolve(metadata)).then(filteredMetadata => {
-                        this.tryPick(stream, filteredMetadata, callConfig, dynamicFilterStack.getFilters());
-                    });
-                }
-                else {
-                    this.tryPick(stream, metadata, callConfig, []);
-                }
-            }
-            else {
-                stream.cancelWithStatus(callConfig.status, 'Failed to route call to method ' + stream.getMethod());
-            }
-        }
-    }
-    _startCallStream(stream, metadata) {
-        this.tryGetConfig(stream, metadata.clone());
+        this.internalChannel = new internal_channel_1.InternalChannel(target, credentials, options);
     }
     close() {
-        this.resolvingLoadBalancer.destroy();
-        this.updateState(connectivity_state_1.ConnectivityState.SHUTDOWN);
-        clearInterval(this.callRefTimer);
-        if (this.channelzEnabled) {
-            channelz_1.unregisterChannelzRef(this.channelzRef);
-        }
-        this.subchannelPool.unrefUnusedSubchannels();
+        this.internalChannel.close();
     }
     getTarget() {
-        return uri_parser_1.uriToString(this.target);
+        return this.internalChannel.getTarget();
     }
     getConnectivityState(tryToConnect) {
-        const connectivityState = this.connectivityState;
-        if (tryToConnect) {
-            this.resolvingLoadBalancer.exitIdle();
-        }
-        return connectivityState;
+        return this.internalChannel.getConnectivityState(tryToConnect);
     }
     watchConnectivityState(currentState, deadline, callback) {
-        if (this.connectivityState === connectivity_state_1.ConnectivityState.SHUTDOWN) {
-            throw new Error('Channel has been shut down');
-        }
-        let timer = null;
-        if (deadline !== Infinity) {
-            const deadlineDate = deadline instanceof Date ? deadline : new Date(deadline);
-            const now = new Date();
-            if (deadline === -Infinity || deadlineDate <= now) {
-                process.nextTick(callback, new Error('Deadline passed without connectivity state change'));
-                return;
-            }
-            timer = setTimeout(() => {
-                this.removeConnectivityStateWatcher(watcherObject);
-                callback(new Error('Deadline passed without connectivity state change'));
-            }, deadlineDate.getTime() - now.getTime());
-        }
-        const watcherObject = {
-            currentState,
-            callback,
-            timer,
-        };
-        this.connectivityStateWatchers.push(watcherObject);
+        this.internalChannel.watchConnectivityState(currentState, deadline, callback);
     }
     /**
      * Get the channelz reference object for this channel. The returned value is
@@ -3885,7 +2819,7 @@ class ChannelImplementation {
      * @returns
      */
     getChannelzRef() {
-        return this.channelzRef;
+        return this.internalChannel.getChannelzRef();
     }
     createCall(method, deadline, host, parentCall, propagateFlags) {
         if (typeof method !== 'string') {
@@ -3894,35 +2828,7 @@ class ChannelImplementation {
         if (!(typeof deadline === 'number' || deadline instanceof Date)) {
             throw new TypeError('Channel#createCall: deadline must be a number or Date');
         }
-        if (this.connectivityState === connectivity_state_1.ConnectivityState.SHUTDOWN) {
-            throw new Error('Channel has been shut down');
-        }
-        const callNumber = getNewCallNumber();
-        this.trace('createCall [' +
-            callNumber +
-            '] method="' +
-            method +
-            '", deadline=' +
-            deadline);
-        const finalOptions = {
-            deadline: deadline,
-            flags: propagateFlags !== null && propagateFlags !== void 0 ? propagateFlags : constants_1.Propagate.DEFAULTS,
-            host: host !== null && host !== void 0 ? host : this.defaultAuthority,
-            parentCall: parentCall,
-        };
-        const stream = new call_stream_1.Http2CallStream(method, this, finalOptions, this.filterStackFactory, this.credentials._getCallCredentials(), callNumber);
-        if (this.channelzEnabled) {
-            this.callTracker.addCallStarted();
-            stream.addStatusWatcher(status => {
-                if (status.code === constants_1.Status.OK) {
-                    this.callTracker.addCallSucceeded();
-                }
-                else {
-                    this.callTracker.addCallFailed();
-                }
-            });
-        }
-        return stream;
+        return this.internalChannel.createCall(method, deadline, host, parentCall, propagateFlags);
     }
 }
 exports.ChannelImplementation = ChannelImplementation;
@@ -3962,24 +2868,24 @@ const make_client_1 = __nccwpck_require__(8541);
 function channelRefToMessage(ref) {
     return {
         channel_id: ref.id,
-        name: ref.name
+        name: ref.name,
     };
 }
 function subchannelRefToMessage(ref) {
     return {
         subchannel_id: ref.id,
-        name: ref.name
+        name: ref.name,
     };
 }
 function serverRefToMessage(ref) {
     return {
-        server_id: ref.id
+        server_id: ref.id,
     };
 }
 function socketRefToMessage(ref) {
     return {
         socket_id: ref.id,
-        name: ref.name
+        name: ref.name,
     };
 }
 /**
@@ -4002,7 +2908,7 @@ class ChannelzTrace {
             severity: severity,
             timestamp: timestamp,
             childChannel: (child === null || child === void 0 ? void 0 : child.kind) === 'channel' ? child : undefined,
-            childSubchannel: (child === null || child === void 0 ? void 0 : child.kind) === 'subchannel' ? child : undefined
+            childSubchannel: (child === null || child === void 0 ? void 0 : child.kind) === 'subchannel' ? child : undefined,
         });
         // Whenever the trace array gets too large, discard the first half
         if (this.events.length >= TARGET_RETAINED_TRACES * 2) {
@@ -4019,10 +2925,14 @@ class ChannelzTrace {
                     description: event.description,
                     severity: event.severity,
                     timestamp: dateToProtoTimestamp(event.timestamp),
-                    channel_ref: event.childChannel ? channelRefToMessage(event.childChannel) : null,
-                    subchannel_ref: event.childSubchannel ? subchannelRefToMessage(event.childSubchannel) : null
+                    channel_ref: event.childChannel
+                        ? channelRefToMessage(event.childChannel)
+                        : null,
+                    subchannel_ref: event.childSubchannel
+                        ? subchannelRefToMessage(event.childSubchannel)
+                        : null,
                 };
-            })
+            }),
         };
     }
 }
@@ -4037,19 +2947,28 @@ class ChannelzChildrenTracker {
         var _a, _b, _c;
         switch (child.kind) {
             case 'channel': {
-                let trackedChild = (_a = this.channelChildren.get(child.id)) !== null && _a !== void 0 ? _a : { ref: child, count: 0 };
+                const trackedChild = (_a = this.channelChildren.get(child.id)) !== null && _a !== void 0 ? _a : {
+                    ref: child,
+                    count: 0,
+                };
                 trackedChild.count += 1;
                 this.channelChildren.set(child.id, trackedChild);
                 break;
             }
             case 'subchannel': {
-                let trackedChild = (_b = this.subchannelChildren.get(child.id)) !== null && _b !== void 0 ? _b : { ref: child, count: 0 };
+                const trackedChild = (_b = this.subchannelChildren.get(child.id)) !== null && _b !== void 0 ? _b : {
+                    ref: child,
+                    count: 0,
+                };
                 trackedChild.count += 1;
                 this.subchannelChildren.set(child.id, trackedChild);
                 break;
             }
             case 'socket': {
-                let trackedChild = (_c = this.socketChildren.get(child.id)) !== null && _c !== void 0 ? _c : { ref: child, count: 0 };
+                const trackedChild = (_c = this.socketChildren.get(child.id)) !== null && _c !== void 0 ? _c : {
+                    ref: child,
+                    count: 0,
+                };
                 trackedChild.count += 1;
                 this.socketChildren.set(child.id, trackedChild);
                 break;
@@ -4059,7 +2978,7 @@ class ChannelzChildrenTracker {
     unrefChild(child) {
         switch (child.kind) {
             case 'channel': {
-                let trackedChild = this.channelChildren.get(child.id);
+                const trackedChild = this.channelChildren.get(child.id);
                 if (trackedChild !== undefined) {
                     trackedChild.count -= 1;
                     if (trackedChild.count === 0) {
@@ -4072,7 +2991,7 @@ class ChannelzChildrenTracker {
                 break;
             }
             case 'subchannel': {
-                let trackedChild = this.subchannelChildren.get(child.id);
+                const trackedChild = this.subchannelChildren.get(child.id);
                 if (trackedChild !== undefined) {
                     trackedChild.count -= 1;
                     if (trackedChild.count === 0) {
@@ -4085,7 +3004,7 @@ class ChannelzChildrenTracker {
                 break;
             }
             case 'socket': {
-                let trackedChild = this.socketChildren.get(child.id);
+                const trackedChild = this.socketChildren.get(child.id);
                 if (trackedChild !== undefined) {
                     trackedChild.count -= 1;
                     if (trackedChild.count === 0) {
@@ -4143,31 +3062,39 @@ const channels = [];
 const subchannels = [];
 const servers = [];
 const sockets = [];
-function registerChannelzChannel(name, getInfo) {
+function registerChannelzChannel(name, getInfo, channelzEnabled) {
     const id = getNextId();
     const ref = { id, name, kind: 'channel' };
-    channels[id] = { ref, getInfo };
+    if (channelzEnabled) {
+        channels[id] = { ref, getInfo };
+    }
     return ref;
 }
 exports.registerChannelzChannel = registerChannelzChannel;
-function registerChannelzSubchannel(name, getInfo) {
+function registerChannelzSubchannel(name, getInfo, channelzEnabled) {
     const id = getNextId();
     const ref = { id, name, kind: 'subchannel' };
-    subchannels[id] = { ref, getInfo };
+    if (channelzEnabled) {
+        subchannels[id] = { ref, getInfo };
+    }
     return ref;
 }
 exports.registerChannelzSubchannel = registerChannelzSubchannel;
-function registerChannelzServer(getInfo) {
+function registerChannelzServer(getInfo, channelzEnabled) {
     const id = getNextId();
     const ref = { id, kind: 'server' };
-    servers[id] = { ref, getInfo };
+    if (channelzEnabled) {
+        servers[id] = { ref, getInfo };
+    }
     return ref;
 }
 exports.registerChannelzServer = registerChannelzServer;
-function registerChannelzSocket(name, getInfo) {
+function registerChannelzSocket(name, getInfo, channelzEnabled) {
     const id = getNextId();
     const ref = { id, name, kind: 'socket' };
-    sockets[id] = { ref, getInfo };
+    if (channelzEnabled) {
+        sockets[id] = { ref, getInfo };
+    }
     return ref;
 }
 exports.registerChannelzSocket = registerChannelzSocket;
@@ -4195,7 +3122,7 @@ exports.unregisterChannelzRef = unregisterChannelzRef;
  */
 function parseIPv6Section(addressSection) {
     const numberValue = Number.parseInt(addressSection, 16);
-    return [numberValue / 256 | 0, numberValue % 256];
+    return [(numberValue / 256) | 0, numberValue % 256];
 }
 /**
  * Parse a chunk of an IPv6 address string to some number of bytes
@@ -4207,7 +3134,9 @@ function parseIPv6Chunk(addressChunk) {
     if (addressChunk === '') {
         return [];
     }
-    const bytePairs = addressChunk.split(':').map(section => parseIPv6Section(section));
+    const bytePairs = addressChunk
+        .split(':')
+        .map(section => parseIPv6Section(section));
     const result = [];
     return result.concat(...bytePairs);
 }
@@ -4218,10 +3147,10 @@ function parseIPv6Chunk(addressChunk) {
  * @returns
  */
 function ipAddressStringToBuffer(ipAddress) {
-    if (net_1.isIPv4(ipAddress)) {
+    if ((0, net_1.isIPv4)(ipAddress)) {
         return Buffer.from(Uint8Array.from(ipAddress.split('.').map(segment => Number.parseInt(segment))));
     }
-    else if (net_1.isIPv6(ipAddress)) {
+    else if ((0, net_1.isIPv6)(ipAddress)) {
         let leftSection;
         let rightSection;
         const doubleColonIndex = ipAddress.indexOf('::');
@@ -4246,27 +3175,27 @@ function connectivityStateToMessage(state) {
     switch (state) {
         case connectivity_state_1.ConnectivityState.CONNECTING:
             return {
-                state: 'CONNECTING'
+                state: 'CONNECTING',
             };
         case connectivity_state_1.ConnectivityState.IDLE:
             return {
-                state: 'IDLE'
+                state: 'IDLE',
             };
         case connectivity_state_1.ConnectivityState.READY:
             return {
-                state: 'READY'
+                state: 'READY',
             };
         case connectivity_state_1.ConnectivityState.SHUTDOWN:
             return {
-                state: 'SHUTDOWN'
+                state: 'SHUTDOWN',
             };
         case connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE:
             return {
-                state: 'TRANSIENT_FAILURE'
+                state: 'TRANSIENT_FAILURE',
             };
         default:
             return {
-                state: 'UNKNOWN'
+                state: 'UNKNOWN',
             };
     }
 }
@@ -4277,7 +3206,7 @@ function dateToProtoTimestamp(date) {
     const millisSinceEpoch = date.getTime();
     return {
         seconds: (millisSinceEpoch / 1000) | 0,
-        nanos: (millisSinceEpoch % 1000) * 1000000
+        nanos: (millisSinceEpoch % 1000) * 1000000,
     };
 }
 function getChannelMessage(channelEntry) {
@@ -4291,10 +3220,10 @@ function getChannelMessage(channelEntry) {
             calls_succeeded: resolvedInfo.callTracker.callsSucceeded,
             calls_failed: resolvedInfo.callTracker.callsFailed,
             last_call_started_timestamp: dateToProtoTimestamp(resolvedInfo.callTracker.lastCallStartedTimestamp),
-            trace: resolvedInfo.trace.getTraceMessage()
+            trace: resolvedInfo.trace.getTraceMessage(),
         },
         channel_ref: resolvedInfo.children.channels.map(ref => channelRefToMessage(ref)),
-        subchannel_ref: resolvedInfo.children.subchannels.map(ref => subchannelRefToMessage(ref))
+        subchannel_ref: resolvedInfo.children.subchannels.map(ref => subchannelRefToMessage(ref)),
     };
 }
 function GetChannel(call, callback) {
@@ -4302,8 +3231,8 @@ function GetChannel(call, callback) {
     const channelEntry = channels[channelId];
     if (channelEntry === undefined) {
         callback({
-            'code': constants_1.Status.NOT_FOUND,
-            'details': 'No channel data found for id ' + channelId
+            code: constants_1.Status.NOT_FOUND,
+            details: 'No channel data found for id ' + channelId,
         });
         return;
     }
@@ -4325,7 +3254,7 @@ function GetTopChannels(call, callback) {
     }
     callback(null, {
         channel: resultList,
-        end: i >= servers.length
+        end: i >= servers.length,
     });
 }
 function getServerMessage(serverEntry) {
@@ -4337,9 +3266,9 @@ function getServerMessage(serverEntry) {
             calls_succeeded: resolvedInfo.callTracker.callsSucceeded,
             calls_failed: resolvedInfo.callTracker.callsFailed,
             last_call_started_timestamp: dateToProtoTimestamp(resolvedInfo.callTracker.lastCallStartedTimestamp),
-            trace: resolvedInfo.trace.getTraceMessage()
+            trace: resolvedInfo.trace.getTraceMessage(),
         },
-        listen_socket: resolvedInfo.listenerChildren.sockets.map(ref => socketRefToMessage(ref))
+        listen_socket: resolvedInfo.listenerChildren.sockets.map(ref => socketRefToMessage(ref)),
     };
 }
 function GetServer(call, callback) {
@@ -4347,8 +3276,8 @@ function GetServer(call, callback) {
     const serverEntry = servers[serverId];
     if (serverEntry === undefined) {
         callback({
-            'code': constants_1.Status.NOT_FOUND,
-            'details': 'No server data found for id ' + serverId
+            code: constants_1.Status.NOT_FOUND,
+            details: 'No server data found for id ' + serverId,
         });
         return;
     }
@@ -4370,7 +3299,7 @@ function GetServers(call, callback) {
     }
     callback(null, {
         server: resultList,
-        end: i >= servers.length
+        end: i >= servers.length,
     });
 }
 function GetSubchannel(call, callback) {
@@ -4378,8 +3307,8 @@ function GetSubchannel(call, callback) {
     const subchannelEntry = subchannels[subchannelId];
     if (subchannelEntry === undefined) {
         callback({
-            'code': constants_1.Status.NOT_FOUND,
-            'details': 'No subchannel data found for id ' + subchannelId
+            code: constants_1.Status.NOT_FOUND,
+            details: 'No subchannel data found for id ' + subchannelId,
         });
         return;
     }
@@ -4393,29 +3322,29 @@ function GetSubchannel(call, callback) {
             calls_succeeded: resolvedInfo.callTracker.callsSucceeded,
             calls_failed: resolvedInfo.callTracker.callsFailed,
             last_call_started_timestamp: dateToProtoTimestamp(resolvedInfo.callTracker.lastCallStartedTimestamp),
-            trace: resolvedInfo.trace.getTraceMessage()
+            trace: resolvedInfo.trace.getTraceMessage(),
         },
-        socket_ref: resolvedInfo.children.sockets.map(ref => socketRefToMessage(ref))
+        socket_ref: resolvedInfo.children.sockets.map(ref => socketRefToMessage(ref)),
     };
     callback(null, { subchannel: subchannelMessage });
 }
 function subchannelAddressToAddressMessage(subchannelAddress) {
     var _a;
-    if (subchannel_address_1.isTcpSubchannelAddress(subchannelAddress)) {
+    if ((0, subchannel_address_1.isTcpSubchannelAddress)(subchannelAddress)) {
         return {
             address: 'tcpip_address',
             tcpip_address: {
                 ip_address: (_a = ipAddressStringToBuffer(subchannelAddress.host)) !== null && _a !== void 0 ? _a : undefined,
-                port: subchannelAddress.port
-            }
+                port: subchannelAddress.port,
+            },
         };
     }
     else {
         return {
             address: 'uds_address',
             uds_address: {
-                filename: subchannelAddress.path
-            }
+                filename: subchannelAddress.path,
+            },
         };
     }
 }
@@ -4425,26 +3354,34 @@ function GetSocket(call, callback) {
     const socketEntry = sockets[socketId];
     if (socketEntry === undefined) {
         callback({
-            'code': constants_1.Status.NOT_FOUND,
-            'details': 'No socket data found for id ' + socketId
+            code: constants_1.Status.NOT_FOUND,
+            details: 'No socket data found for id ' + socketId,
         });
         return;
     }
     const resolvedInfo = socketEntry.getInfo();
-    const securityMessage = resolvedInfo.security ? {
-        model: 'tls',
-        tls: {
-            cipher_suite: resolvedInfo.security.cipherSuiteStandardName ? 'standard_name' : 'other_name',
-            standard_name: (_a = resolvedInfo.security.cipherSuiteStandardName) !== null && _a !== void 0 ? _a : undefined,
-            other_name: (_b = resolvedInfo.security.cipherSuiteOtherName) !== null && _b !== void 0 ? _b : undefined,
-            local_certificate: (_c = resolvedInfo.security.localCertificate) !== null && _c !== void 0 ? _c : undefined,
-            remote_certificate: (_d = resolvedInfo.security.remoteCertificate) !== null && _d !== void 0 ? _d : undefined
+    const securityMessage = resolvedInfo.security
+        ? {
+            model: 'tls',
+            tls: {
+                cipher_suite: resolvedInfo.security.cipherSuiteStandardName
+                    ? 'standard_name'
+                    : 'other_name',
+                standard_name: (_a = resolvedInfo.security.cipherSuiteStandardName) !== null && _a !== void 0 ? _a : undefined,
+                other_name: (_b = resolvedInfo.security.cipherSuiteOtherName) !== null && _b !== void 0 ? _b : undefined,
+                local_certificate: (_c = resolvedInfo.security.localCertificate) !== null && _c !== void 0 ? _c : undefined,
+                remote_certificate: (_d = resolvedInfo.security.remoteCertificate) !== null && _d !== void 0 ? _d : undefined,
+            },
         }
-    } : null;
+        : null;
     const socketMessage = {
         ref: socketRefToMessage(socketEntry.ref),
-        local: resolvedInfo.localAddress ? subchannelAddressToAddressMessage(resolvedInfo.localAddress) : null,
-        remote: resolvedInfo.remoteAddress ? subchannelAddressToAddressMessage(resolvedInfo.remoteAddress) : null,
+        local: resolvedInfo.localAddress
+            ? subchannelAddressToAddressMessage(resolvedInfo.localAddress)
+            : null,
+        remote: resolvedInfo.remoteAddress
+            ? subchannelAddressToAddressMessage(resolvedInfo.remoteAddress)
+            : null,
         remote_name: (_e = resolvedInfo.remoteName) !== null && _e !== void 0 ? _e : undefined,
         security: securityMessage,
         data: {
@@ -4458,9 +3395,13 @@ function GetSocket(call, callback) {
             messages_sent: resolvedInfo.messagesSent,
             last_message_received_timestamp: dateToProtoTimestamp(resolvedInfo.lastMessageReceivedTimestamp),
             last_message_sent_timestamp: dateToProtoTimestamp(resolvedInfo.lastMessageSentTimestamp),
-            local_flow_control_window: resolvedInfo.localFlowControlWindow ? { value: resolvedInfo.localFlowControlWindow } : null,
-            remote_flow_control_window: resolvedInfo.remoteFlowControlWindow ? { value: resolvedInfo.remoteFlowControlWindow } : null,
-        }
+            local_flow_control_window: resolvedInfo.localFlowControlWindow
+                ? { value: resolvedInfo.localFlowControlWindow }
+                : null,
+            remote_flow_control_window: resolvedInfo.remoteFlowControlWindow
+                ? { value: resolvedInfo.remoteFlowControlWindow }
+                : null,
+        },
     };
     callback(null, { socket: socketMessage });
 }
@@ -4469,8 +3410,8 @@ function GetServerSockets(call, callback) {
     const serverEntry = servers[serverId];
     if (serverEntry === undefined) {
         callback({
-            'code': constants_1.Status.NOT_FOUND,
-            'details': 'No server data found for id ' + serverId
+            code: constants_1.Status.NOT_FOUND,
+            details: 'No server data found for id ' + serverId,
         });
         return;
     }
@@ -4493,7 +3434,7 @@ function GetServerSockets(call, callback) {
     }
     callback(null, {
         socket_ref: resultList,
-        end: i >= allSockets.length
+        end: i >= allSockets.length,
     });
 }
 function getChannelzHandlers() {
@@ -4504,7 +3445,7 @@ function getChannelzHandlers() {
         GetServers,
         GetSubchannel,
         GetSocket,
-        GetServerSockets
+        GetServerSockets,
     };
 }
 exports.getChannelzHandlers = getChannelzHandlers;
@@ -4522,17 +3463,16 @@ function getChannelzServiceDefinition() {
         enums: String,
         defaults: true,
         oneofs: true,
-        includeDirs: [
-            __nccwpck_require__.ab + "proto"
-        ]
+        includeDirs: [__nccwpck_require__.ab + "proto"],
     });
-    const channelzGrpcObject = make_client_1.loadPackageDefinition(loadedProto);
-    loadedChannelzDefinition = channelzGrpcObject.grpc.channelz.v1.Channelz.service;
+    const channelzGrpcObject = (0, make_client_1.loadPackageDefinition)(loadedProto);
+    loadedChannelzDefinition =
+        channelzGrpcObject.grpc.channelz.v1.Channelz.service;
     return loadedChannelzDefinition;
 }
 exports.getChannelzServiceDefinition = getChannelzServiceDefinition;
 function setup() {
-    admin_1.registerAdminService(getChannelzServiceDefinition, getChannelzHandlers);
+    (0, admin_1.registerAdminService)(getChannelzServiceDefinition, getChannelzHandlers);
 }
 exports.setup = setup;
 //# sourceMappingURL=channelz.js.map
@@ -4563,8 +3503,9 @@ exports.setup = setup;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getInterceptingCall = exports.InterceptingCall = exports.RequesterBuilder = exports.ListenerBuilder = exports.InterceptorConfigurationError = void 0;
 const metadata_1 = __nccwpck_require__(3665);
-const call_stream_1 = __nccwpck_require__(8988);
+const call_interface_1 = __nccwpck_require__(8710);
 const constants_1 = __nccwpck_require__(634);
+const error_1 = __nccwpck_require__(2336);
 /**
  * Error class associated with passing both interceptors and interceptor
  * providers to a client constructor or as call options.
@@ -4663,10 +3604,10 @@ const defaultRequester = {
     sendMessage: (message, next) => {
         next(message);
     },
-    halfClose: (next) => {
+    halfClose: next => {
         next();
     },
-    cancel: (next) => {
+    cancel: next => {
         next();
     },
 };
@@ -4728,16 +3669,16 @@ class InterceptingCall {
     start(metadata, interceptingListener) {
         var _a, _b, _c, _d, _e, _f;
         const fullInterceptingListener = {
-            onReceiveMetadata: (_b = (_a = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveMetadata) === null || _a === void 0 ? void 0 : _a.bind(interceptingListener)) !== null && _b !== void 0 ? _b : ((metadata) => { }),
-            onReceiveMessage: (_d = (_c = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveMessage) === null || _c === void 0 ? void 0 : _c.bind(interceptingListener)) !== null && _d !== void 0 ? _d : ((message) => { }),
-            onReceiveStatus: (_f = (_e = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveStatus) === null || _e === void 0 ? void 0 : _e.bind(interceptingListener)) !== null && _f !== void 0 ? _f : ((status) => { }),
+            onReceiveMetadata: (_b = (_a = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveMetadata) === null || _a === void 0 ? void 0 : _a.bind(interceptingListener)) !== null && _b !== void 0 ? _b : (metadata => { }),
+            onReceiveMessage: (_d = (_c = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveMessage) === null || _c === void 0 ? void 0 : _c.bind(interceptingListener)) !== null && _d !== void 0 ? _d : (message => { }),
+            onReceiveStatus: (_f = (_e = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveStatus) === null || _e === void 0 ? void 0 : _e.bind(interceptingListener)) !== null && _f !== void 0 ? _f : (status => { }),
         };
         this.processingMetadata = true;
         this.requester.start(metadata, fullInterceptingListener, (md, listener) => {
             var _a, _b, _c;
             this.processingMetadata = false;
             let finalInterceptingListener;
-            if (call_stream_1.isInterceptingListener(listener)) {
+            if ((0, call_interface_1.isInterceptingListener)(listener)) {
                 finalInterceptingListener = listener;
             }
             else {
@@ -4746,7 +3687,7 @@ class InterceptingCall {
                     onReceiveMessage: (_b = listener.onReceiveMessage) !== null && _b !== void 0 ? _b : defaultListener.onReceiveMessage,
                     onReceiveStatus: (_c = listener.onReceiveStatus) !== null && _c !== void 0 ? _c : defaultListener.onReceiveStatus,
                 };
-                finalInterceptingListener = new call_stream_1.InterceptingListenerImpl(fullListener, fullInterceptingListener);
+                finalInterceptingListener = new call_interface_1.InterceptingListenerImpl(fullListener, fullInterceptingListener);
             }
             this.nextCall.start(md, finalInterceptingListener);
             this.processPendingMessage();
@@ -4756,7 +3697,7 @@ class InterceptingCall {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sendMessageWithContext(context, message) {
         this.processingMessage = true;
-        this.requester.sendMessage(message, (finalMessage) => {
+        this.requester.sendMessage(message, finalMessage => {
             this.processingMessage = false;
             if (this.processingMetadata) {
                 this.pendingMessageContext = context;
@@ -4784,9 +3725,6 @@ class InterceptingCall {
                 this.nextCall.halfClose();
             }
         });
-    }
-    setCredentials(credentials) {
-        this.nextCall.setCredentials(credentials);
     }
 }
 exports.InterceptingCall = InterceptingCall;
@@ -4820,9 +3758,6 @@ class BaseInterceptingCall {
     getPeer() {
         return this.call.getPeer();
     }
-    setCredentials(credentials) {
-        this.call.setCredentials(credentials);
-    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sendMessageWithContext(context, message) {
         let serialized;
@@ -4830,7 +3765,7 @@ class BaseInterceptingCall {
             serialized = this.methodDefinition.requestSerialize(message);
         }
         catch (e) {
-            this.call.cancelWithStatus(constants_1.Status.INTERNAL, `Request message serialization failure: ${e.message}`);
+            this.call.cancelWithStatus(constants_1.Status.INTERNAL, `Request message serialization failure: ${(0, error_1.getErrorMessage)(e)}`);
             return;
         }
         this.call.sendMessageWithContext(context, serialized);
@@ -4842,11 +3777,11 @@ class BaseInterceptingCall {
     start(metadata, interceptingListener) {
         let readError = null;
         this.call.start(metadata, {
-            onReceiveMetadata: (metadata) => {
+            onReceiveMetadata: metadata => {
                 var _a;
                 (_a = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveMetadata) === null || _a === void 0 ? void 0 : _a.call(interceptingListener, metadata);
             },
-            onReceiveMessage: (message) => {
+            onReceiveMessage: message => {
                 var _a;
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 let deserialized;
@@ -4856,7 +3791,7 @@ class BaseInterceptingCall {
                 catch (e) {
                     readError = {
                         code: constants_1.Status.INTERNAL,
-                        details: `Response message parsing error: ${e.message}`,
+                        details: `Response message parsing error: ${(0, error_1.getErrorMessage)(e)}`,
                         metadata: new metadata_1.Metadata(),
                     };
                     this.call.cancelWithStatus(readError.code, readError.details);
@@ -4864,7 +3799,7 @@ class BaseInterceptingCall {
                 }
                 (_a = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveMessage) === null || _a === void 0 ? void 0 : _a.call(interceptingListener, deserialized);
             },
-            onReceiveStatus: (status) => {
+            onReceiveStatus: status => {
                 var _a, _b;
                 if (readError) {
                     (_a = interceptingListener === null || interceptingListener === void 0 ? void 0 : interceptingListener.onReceiveStatus) === null || _a === void 0 ? void 0 : _a.call(interceptingListener, readError);
@@ -4895,7 +3830,7 @@ class BaseUnaryInterceptingCall extends BaseInterceptingCall {
         var _a, _b;
         let receivedMessage = false;
         const wrapperListener = {
-            onReceiveMetadata: (_b = (_a = listener === null || listener === void 0 ? void 0 : listener.onReceiveMetadata) === null || _a === void 0 ? void 0 : _a.bind(listener)) !== null && _b !== void 0 ? _b : ((metadata) => { }),
+            onReceiveMetadata: (_b = (_a = listener === null || listener === void 0 ? void 0 : listener.onReceiveMetadata) === null || _a === void 0 ? void 0 : _a.bind(listener)) !== null && _b !== void 0 ? _b : (metadata => { }),
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             onReceiveMessage: (message) => {
                 var _a;
@@ -4949,14 +3884,14 @@ methodDefinition, options, channel) {
     if (interceptorArgs.callInterceptors.length > 0 ||
         interceptorArgs.callInterceptorProviders.length > 0) {
         interceptors = []
-            .concat(interceptorArgs.callInterceptors, interceptorArgs.callInterceptorProviders.map((provider) => provider(methodDefinition)))
-            .filter((interceptor) => interceptor);
+            .concat(interceptorArgs.callInterceptors, interceptorArgs.callInterceptorProviders.map(provider => provider(methodDefinition)))
+            .filter(interceptor => interceptor);
         // Filter out falsy values when providers return nothing
     }
     else {
         interceptors = []
-            .concat(interceptorArgs.clientInterceptors, interceptorArgs.clientInterceptorProviders.map((provider) => provider(methodDefinition)))
-            .filter((interceptor) => interceptor);
+            .concat(interceptorArgs.clientInterceptors, interceptorArgs.clientInterceptorProviders.map(provider => provider(methodDefinition)))
+            .filter(interceptor => interceptor);
         // Filter out falsy values when providers return nothing
     }
     const interceptorOptions = Object.assign({}, options, {
@@ -4970,7 +3905,7 @@ methodDefinition, options, channel) {
      * handles (de)serialization and also gets the underlying call from the
      * channel. */
     const getCall = interceptors.reduceRight((nextCall, nextInterceptor) => {
-        return (currentOptions) => nextInterceptor(currentOptions, nextCall);
+        return currentOptions => nextInterceptor(currentOptions, nextCall);
     }, (finalOptions) => getBottomInterceptingCall(channel, finalOptions, methodDefinition));
     return getCall(interceptorOptions);
 }
@@ -5014,6 +3949,9 @@ const INTERCEPTOR_PROVIDER_SYMBOL = Symbol();
 const CALL_INVOCATION_TRANSFORMER_SYMBOL = Symbol();
 function isFunction(arg) {
     return typeof arg === 'function';
+}
+function getErrorStackString(error) {
+    return error.stack.split('\n').slice(1).join('\n');
 }
 /**
  * A generic gRPC client. Primarily useful as a base class for all generated
@@ -5131,19 +4069,17 @@ class Client {
             callInterceptors: (_a = callProperties.callOptions.interceptors) !== null && _a !== void 0 ? _a : [],
             callInterceptorProviders: (_b = callProperties.callOptions.interceptor_providers) !== null && _b !== void 0 ? _b : [],
         };
-        const call = client_interceptors_1.getInterceptingCall(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
+        const call = (0, client_interceptors_1.getInterceptingCall)(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
         /* This needs to happen before the emitter is used. Unfortunately we can't
          * enforce this with the type system. We need to construct this emitter
          * before calling the CallInvocationTransformer, and we need to create the
          * call after that. */
         emitter.call = call;
-        if (callProperties.callOptions.credentials) {
-            call.setCredentials(callProperties.callOptions.credentials);
-        }
         let responseMessage = null;
         let receivedStatus = false;
+        let callerStackError = new Error();
         call.start(callProperties.metadata, {
-            onReceiveMetadata: (metadata) => {
+            onReceiveMetadata: metadata => {
                 emitter.emit('metadata', metadata);
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5159,11 +4095,25 @@ class Client {
                 }
                 receivedStatus = true;
                 if (status.code === constants_1.Status.OK) {
-                    callProperties.callback(null, responseMessage);
+                    if (responseMessage === null) {
+                        const callerStack = getErrorStackString(callerStackError);
+                        callProperties.callback((0, call_1.callErrorFromStatus)({
+                            code: constants_1.Status.INTERNAL,
+                            details: 'No message received',
+                            metadata: status.metadata,
+                        }, callerStack));
+                    }
+                    else {
+                        callProperties.callback(null, responseMessage);
+                    }
                 }
                 else {
-                    callProperties.callback(call_1.callErrorFromStatus(status));
+                    const callerStack = getErrorStackString(callerStackError);
+                    callProperties.callback((0, call_1.callErrorFromStatus)(status, callerStack));
                 }
+                /* Avoid retaining the callerStackError object in the call context of
+                 * the status event handler. */
+                callerStackError = null;
                 emitter.emit('status', status);
             },
         });
@@ -5199,19 +4149,17 @@ class Client {
             callInterceptors: (_a = callProperties.callOptions.interceptors) !== null && _a !== void 0 ? _a : [],
             callInterceptorProviders: (_b = callProperties.callOptions.interceptor_providers) !== null && _b !== void 0 ? _b : [],
         };
-        const call = client_interceptors_1.getInterceptingCall(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
+        const call = (0, client_interceptors_1.getInterceptingCall)(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
         /* This needs to happen before the emitter is used. Unfortunately we can't
          * enforce this with the type system. We need to construct this emitter
          * before calling the CallInvocationTransformer, and we need to create the
          * call after that. */
         emitter.call = call;
-        if (callProperties.callOptions.credentials) {
-            call.setCredentials(callProperties.callOptions.credentials);
-        }
         let responseMessage = null;
         let receivedStatus = false;
+        let callerStackError = new Error();
         call.start(callProperties.metadata, {
-            onReceiveMetadata: (metadata) => {
+            onReceiveMetadata: metadata => {
                 emitter.emit('metadata', metadata);
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5227,11 +4175,25 @@ class Client {
                 }
                 receivedStatus = true;
                 if (status.code === constants_1.Status.OK) {
-                    callProperties.callback(null, responseMessage);
+                    if (responseMessage === null) {
+                        const callerStack = getErrorStackString(callerStackError);
+                        callProperties.callback((0, call_1.callErrorFromStatus)({
+                            code: constants_1.Status.INTERNAL,
+                            details: 'No message received',
+                            metadata: status.metadata,
+                        }, callerStack));
+                    }
+                    else {
+                        callProperties.callback(null, responseMessage);
+                    }
                 }
                 else {
-                    callProperties.callback(call_1.callErrorFromStatus(status));
+                    const callerStack = getErrorStackString(callerStackError);
+                    callProperties.callback((0, call_1.callErrorFromStatus)(status, callerStack));
                 }
+                /* Avoid retaining the callerStackError object in the call context of
+                 * the status event handler. */
+                callerStackError = null;
                 emitter.emit('status', status);
             },
         });
@@ -5288,16 +4250,14 @@ class Client {
             callInterceptors: (_a = callProperties.callOptions.interceptors) !== null && _a !== void 0 ? _a : [],
             callInterceptorProviders: (_b = callProperties.callOptions.interceptor_providers) !== null && _b !== void 0 ? _b : [],
         };
-        const call = client_interceptors_1.getInterceptingCall(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
+        const call = (0, client_interceptors_1.getInterceptingCall)(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
         /* This needs to happen before the emitter is used. Unfortunately we can't
          * enforce this with the type system. We need to construct this emitter
          * before calling the CallInvocationTransformer, and we need to create the
          * call after that. */
         stream.call = call;
-        if (callProperties.callOptions.credentials) {
-            call.setCredentials(callProperties.callOptions.credentials);
-        }
         let receivedStatus = false;
+        let callerStackError = new Error();
         call.start(callProperties.metadata, {
             onReceiveMetadata(metadata) {
                 stream.emit('metadata', metadata);
@@ -5313,8 +4273,12 @@ class Client {
                 receivedStatus = true;
                 stream.push(null);
                 if (status.code !== constants_1.Status.OK) {
-                    stream.emit('error', call_1.callErrorFromStatus(status));
+                    const callerStack = getErrorStackString(callerStackError);
+                    stream.emit('error', (0, call_1.callErrorFromStatus)(status, callerStack));
                 }
+                /* Avoid retaining the callerStackError object in the call context of
+                 * the status event handler. */
+                callerStackError = null;
                 stream.emit('status', status);
             },
         });
@@ -5349,16 +4313,14 @@ class Client {
             callInterceptors: (_a = callProperties.callOptions.interceptors) !== null && _a !== void 0 ? _a : [],
             callInterceptorProviders: (_b = callProperties.callOptions.interceptor_providers) !== null && _b !== void 0 ? _b : [],
         };
-        const call = client_interceptors_1.getInterceptingCall(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
+        const call = (0, client_interceptors_1.getInterceptingCall)(interceptorArgs, callProperties.methodDefinition, callProperties.callOptions, callProperties.channel);
         /* This needs to happen before the emitter is used. Unfortunately we can't
          * enforce this with the type system. We need to construct this emitter
          * before calling the CallInvocationTransformer, and we need to create the
          * call after that. */
         stream.call = call;
-        if (callProperties.callOptions.credentials) {
-            call.setCredentials(callProperties.callOptions.credentials);
-        }
         let receivedStatus = false;
+        let callerStackError = new Error();
         call.start(callProperties.metadata, {
             onReceiveMetadata(metadata) {
                 stream.emit('metadata', metadata);
@@ -5373,8 +4335,12 @@ class Client {
                 receivedStatus = true;
                 stream.push(null);
                 if (status.code !== constants_1.Status.OK) {
-                    stream.emit('error', call_1.callErrorFromStatus(status));
+                    const callerStack = getErrorStackString(callerStackError);
+                    stream.emit('error', (0, call_1.callErrorFromStatus)(status, callerStack));
                 }
+                /* Avoid retaining the callerStackError object in the call context of
+                 * the status event handler. */
+                callerStackError = null;
                 stream.emit('status', status);
             },
         });
@@ -5414,8 +4380,7 @@ var CompressionAlgorithms;
     CompressionAlgorithms[CompressionAlgorithms["identity"] = 0] = "identity";
     CompressionAlgorithms[CompressionAlgorithms["deflate"] = 1] = "deflate";
     CompressionAlgorithms[CompressionAlgorithms["gzip"] = 2] = "gzip";
-})(CompressionAlgorithms = exports.CompressionAlgorithms || (exports.CompressionAlgorithms = {}));
-;
+})(CompressionAlgorithms || (exports.CompressionAlgorithms = CompressionAlgorithms = {}));
 //# sourceMappingURL=compression-algorithms.js.map
 
 /***/ }),
@@ -5449,7 +4414,7 @@ const constants_1 = __nccwpck_require__(634);
 const filter_1 = __nccwpck_require__(3392);
 const logging = __nccwpck_require__(5993);
 const isCompressionAlgorithmKey = (key) => {
-    return typeof key === 'number' && typeof compression_algorithms_1.CompressionAlgorithms[key] === 'string';
+    return (typeof key === 'number' && typeof compression_algorithms_1.CompressionAlgorithms[key] === 'string');
 };
 class CompressionHandler {
     /**
@@ -5595,7 +4560,8 @@ class CompressionFilter extends filter_1.BaseFilter {
                  * 2) We've previously received a response from the server including a grpc-accept-encoding header
                  *    In that case we only want to use the encoding chosen by the client if the server supports it
                  */
-                if (!serverSupportedEncodings || serverSupportedEncodings.includes(clientSelectedEncoding)) {
+                if (!serverSupportedEncodings ||
+                    serverSupportedEncodings.includes(clientSelectedEncoding)) {
                     this.currentCompressionAlgorithm = clientSelectedEncoding;
                     this.sendCompression = getCompressionHandler(this.currentCompressionAlgorithm);
                 }
@@ -5631,7 +4597,8 @@ class CompressionFilter extends filter_1.BaseFilter {
          * If not, reset the sendCompression filter and have it use the default IdentityHandler */
         const serverSupportedEncodingsHeader = metadata.get('grpc-accept-encoding')[0];
         if (serverSupportedEncodingsHeader) {
-            this.sharedFilterConfig.serverSupportedEncodingHeader = serverSupportedEncodingsHeader;
+            this.sharedFilterConfig.serverSupportedEncodingHeader =
+                serverSupportedEncodingsHeader;
             const serverSupportedEncodings = serverSupportedEncodingsHeader.split(',');
             if (!serverSupportedEncodings.includes(this.currentCompressionAlgorithm)) {
                 this.sendCompression = new IdentityHandler();
@@ -5652,7 +4619,7 @@ class CompressionFilter extends filter_1.BaseFilter {
             compress = false;
         }
         else {
-            compress = (((_a = resolvedMessage.flags) !== null && _a !== void 0 ? _a : 0) & 2 /* NoCompress */) === 0;
+            compress = (((_a = resolvedMessage.flags) !== null && _a !== void 0 ? _a : 0) & 2 /* WriteFlags.NoCompress */) === 0;
         }
         return {
             message: await this.sendCompression.writeMessage(resolvedMessage.message, compress),
@@ -5670,11 +4637,10 @@ class CompressionFilter extends filter_1.BaseFilter {
 exports.CompressionFilter = CompressionFilter;
 class CompressionFilterFactory {
     constructor(channel, options) {
-        this.channel = channel;
         this.options = options;
         this.sharedFilterConfig = {};
     }
-    createFilter(callStream) {
+    createFilter() {
         return new CompressionFilter(this.options, this.sharedFilterConfig);
     }
 }
@@ -5713,7 +4679,7 @@ var ConnectivityState;
     ConnectivityState[ConnectivityState["READY"] = 2] = "READY";
     ConnectivityState[ConnectivityState["TRANSIENT_FAILURE"] = 3] = "TRANSIENT_FAILURE";
     ConnectivityState[ConnectivityState["SHUTDOWN"] = 4] = "SHUTDOWN";
-})(ConnectivityState = exports.ConnectivityState || (exports.ConnectivityState = {}));
+})(ConnectivityState || (exports.ConnectivityState = ConnectivityState = {}));
 //# sourceMappingURL=connectivity-state.js.map
 
 /***/ }),
@@ -5760,14 +4726,14 @@ var Status;
     Status[Status["UNAVAILABLE"] = 14] = "UNAVAILABLE";
     Status[Status["DATA_LOSS"] = 15] = "DATA_LOSS";
     Status[Status["UNAUTHENTICATED"] = 16] = "UNAUTHENTICATED";
-})(Status = exports.Status || (exports.Status = {}));
+})(Status || (exports.Status = Status = {}));
 var LogVerbosity;
 (function (LogVerbosity) {
     LogVerbosity[LogVerbosity["DEBUG"] = 0] = "DEBUG";
     LogVerbosity[LogVerbosity["INFO"] = 1] = "INFO";
     LogVerbosity[LogVerbosity["ERROR"] = 2] = "ERROR";
     LogVerbosity[LogVerbosity["NONE"] = 3] = "NONE";
-})(LogVerbosity = exports.LogVerbosity || (exports.LogVerbosity = {}));
+})(LogVerbosity || (exports.LogVerbosity = LogVerbosity = {}));
 /**
  * NOTE: This enum is not currently used in any implemented API in this
  * library. It is included only for type parity with the other implementation.
@@ -5780,7 +4746,7 @@ var Propagate;
     Propagate[Propagate["CANCELLATION"] = 8] = "CANCELLATION";
     // https://github.com/grpc/grpc/blob/master/include/grpc/impl/codegen/propagation_bits.h#L43
     Propagate[Propagate["DEFAULTS"] = 65535] = "DEFAULTS";
-})(Propagate = exports.Propagate || (exports.Propagate = {}));
+})(Propagate || (exports.Propagate = Propagate = {}));
 // -1 means unlimited
 exports.DEFAULT_MAX_SEND_MESSAGE_LENGTH = -1;
 // 4 MB default
@@ -5789,8 +4755,58 @@ exports.DEFAULT_MAX_RECEIVE_MESSAGE_LENGTH = 4 * 1024 * 1024;
 
 /***/ }),
 
-/***/ 1217:
+/***/ 9129:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2022 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.restrictControlPlaneStatusCode = void 0;
+const constants_1 = __nccwpck_require__(634);
+const INAPPROPRIATE_CONTROL_PLANE_CODES = [
+    constants_1.Status.OK,
+    constants_1.Status.INVALID_ARGUMENT,
+    constants_1.Status.NOT_FOUND,
+    constants_1.Status.ALREADY_EXISTS,
+    constants_1.Status.FAILED_PRECONDITION,
+    constants_1.Status.ABORTED,
+    constants_1.Status.OUT_OF_RANGE,
+    constants_1.Status.DATA_LOSS,
+];
+function restrictControlPlaneStatusCode(code, details) {
+    if (INAPPROPRIATE_CONTROL_PLANE_CODES.includes(code)) {
+        return {
+            code: constants_1.Status.INTERNAL,
+            details: `Invalid status from control plane: ${code} ${constants_1.Status[code]} ${details}`,
+        };
+    }
+    else {
+        return { code, details };
+    }
+}
+exports.restrictControlPlaneStatusCode = restrictControlPlaneStatusCode;
+//# sourceMappingURL=control-plane-status.js.map
+
+/***/ }),
+
+/***/ 511:
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
@@ -5811,17 +4827,29 @@ exports.DEFAULT_MAX_RECEIVE_MESSAGE_LENGTH = 4 * 1024 * 1024;
  *
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.DeadlineFilterFactory = exports.DeadlineFilter = void 0;
-const constants_1 = __nccwpck_require__(634);
-const filter_1 = __nccwpck_require__(3392);
+exports.deadlineToString = exports.getRelativeTimeout = exports.getDeadlineTimeoutString = exports.minDeadline = void 0;
+function minDeadline(...deadlineList) {
+    let minValue = Infinity;
+    for (const deadline of deadlineList) {
+        const deadlineMsecs = deadline instanceof Date ? deadline.getTime() : deadline;
+        if (deadlineMsecs < minValue) {
+            minValue = deadlineMsecs;
+        }
+    }
+    return minValue;
+}
+exports.minDeadline = minDeadline;
 const units = [
     ['m', 1],
     ['S', 1000],
     ['M', 60 * 1000],
     ['H', 60 * 60 * 1000],
 ];
-function getDeadline(deadline) {
+function getDeadlineTimeoutString(deadline) {
     const now = new Date().getTime();
+    if (deadline instanceof Date) {
+        deadline = deadline.getTime();
+    }
     const timeoutMs = Math.max(deadline - now, 0);
     for (const [unit, factor] of units) {
         const amount = timeoutMs / factor;
@@ -5831,78 +4859,54 @@ function getDeadline(deadline) {
     }
     throw new Error('Deadline is too far in the future');
 }
-class DeadlineFilter extends filter_1.BaseFilter {
-    constructor(channel, callStream) {
-        super();
-        this.channel = channel;
-        this.callStream = callStream;
-        this.timer = null;
-        this.deadline = Infinity;
-        this.retreiveDeadline();
-        this.runTimer();
+exports.getDeadlineTimeoutString = getDeadlineTimeoutString;
+/**
+ * See https://nodejs.org/api/timers.html#settimeoutcallback-delay-args
+ * In particular, "When delay is larger than 2147483647 or less than 1, the
+ * delay will be set to 1. Non-integer delays are truncated to an integer."
+ * This number of milliseconds is almost 25 days.
+ */
+const MAX_TIMEOUT_TIME = 2147483647;
+/**
+ * Get the timeout value that should be passed to setTimeout now for the timer
+ * to end at the deadline. For any deadline before now, the timer should end
+ * immediately, represented by a value of 0. For any deadline more than
+ * MAX_TIMEOUT_TIME milliseconds in the future, a timer cannot be set that will
+ * end at that time, so it is treated as infinitely far in the future.
+ * @param deadline
+ * @returns
+ */
+function getRelativeTimeout(deadline) {
+    const deadlineMs = deadline instanceof Date ? deadline.getTime() : deadline;
+    const now = new Date().getTime();
+    const timeout = deadlineMs - now;
+    if (timeout < 0) {
+        return 0;
     }
-    retreiveDeadline() {
-        const callDeadline = this.callStream.getDeadline();
-        if (callDeadline instanceof Date) {
-            this.deadline = callDeadline.getTime();
+    else if (timeout > MAX_TIMEOUT_TIME) {
+        return Infinity;
+    }
+    else {
+        return timeout;
+    }
+}
+exports.getRelativeTimeout = getRelativeTimeout;
+function deadlineToString(deadline) {
+    if (deadline instanceof Date) {
+        return deadline.toISOString();
+    }
+    else {
+        const dateDeadline = new Date(deadline);
+        if (Number.isNaN(dateDeadline.getTime())) {
+            return '' + deadline;
         }
         else {
-            this.deadline = callDeadline;
+            return dateDeadline.toISOString();
         }
-    }
-    runTimer() {
-        var _a, _b;
-        if (this.timer) {
-            clearTimeout(this.timer);
-        }
-        const now = new Date().getTime();
-        const timeout = this.deadline - now;
-        if (timeout <= 0) {
-            process.nextTick(() => {
-                this.callStream.cancelWithStatus(constants_1.Status.DEADLINE_EXCEEDED, 'Deadline exceeded');
-            });
-        }
-        else if (this.deadline !== Infinity) {
-            this.timer = setTimeout(() => {
-                this.callStream.cancelWithStatus(constants_1.Status.DEADLINE_EXCEEDED, 'Deadline exceeded');
-            }, timeout);
-            (_b = (_a = this.timer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
-        }
-    }
-    refresh() {
-        this.retreiveDeadline();
-        this.runTimer();
-    }
-    async sendMetadata(metadata) {
-        if (this.deadline === Infinity) {
-            return metadata;
-        }
-        /* The input metadata promise depends on the original channel.connect()
-         * promise, so when it is complete that implies that the channel is
-         * connected */
-        const finalMetadata = await metadata;
-        const timeoutString = getDeadline(this.deadline);
-        finalMetadata.set('grpc-timeout', timeoutString);
-        return finalMetadata;
-    }
-    receiveTrailers(status) {
-        if (this.timer) {
-            clearTimeout(this.timer);
-        }
-        return status;
     }
 }
-exports.DeadlineFilter = DeadlineFilter;
-class DeadlineFilterFactory {
-    constructor(channel) {
-        this.channel = channel;
-    }
-    createFilter(callStream) {
-        return new DeadlineFilter(this.channel, callStream);
-    }
-}
-exports.DeadlineFilterFactory = DeadlineFilterFactory;
-//# sourceMappingURL=deadline-filter.js.map
+exports.deadlineToString = deadlineToString;
+//# sourceMappingURL=deadline.js.map
 
 /***/ }),
 
@@ -5932,7 +4936,7 @@ exports.isDuration = exports.durationToMs = exports.msToDuration = void 0;
 function msToDuration(millis) {
     return {
         seconds: (millis / 1000) | 0,
-        nanos: (millis % 1000) * 1000000 | 0
+        nanos: ((millis % 1000) * 1000000) | 0,
     };
 }
 exports.msToDuration = msToDuration;
@@ -5941,10 +4945,58 @@ function durationToMs(duration) {
 }
 exports.durationToMs = durationToMs;
 function isDuration(value) {
-    return (typeof value.seconds === 'number') && (typeof value.nanos === 'number');
+    return typeof value.seconds === 'number' && typeof value.nanos === 'number';
 }
 exports.isDuration = isDuration;
 //# sourceMappingURL=duration.js.map
+
+/***/ }),
+
+/***/ 2336:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/*
+ * Copyright 2022 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getErrorCode = exports.getErrorMessage = void 0;
+function getErrorMessage(error) {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    else {
+        return String(error);
+    }
+}
+exports.getErrorMessage = getErrorMessage;
+function getErrorCode(error) {
+    if (typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        typeof error.code === 'number') {
+        return error.code;
+    }
+    else {
+        return null;
+    }
+}
+exports.getErrorCode = getErrorCode;
+//# sourceMappingURL=error.js.map
 
 /***/ }),
 
@@ -5954,10 +5006,13 @@ exports.isDuration = isDuration;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.OutlierDetectionLoadBalancingConfig = exports.BaseSubchannelWrapper = exports.registerAdminService = exports.FilterStackFactory = exports.BaseFilter = exports.PickResultType = exports.QueuePicker = exports.UnavailablePicker = exports.ChildLoadBalancerHandler = exports.subchannelAddressToString = exports.validateLoadBalancingConfig = exports.getFirstUsableConfig = exports.registerLoadBalancerType = exports.createChildChannelControlHelper = exports.BackoffTimeout = exports.durationToMs = exports.uriToString = exports.createResolver = exports.registerResolver = exports.log = exports.trace = void 0;
 var logging_1 = __nccwpck_require__(5993);
 Object.defineProperty(exports, "trace", ({ enumerable: true, get: function () { return logging_1.trace; } }));
+Object.defineProperty(exports, "log", ({ enumerable: true, get: function () { return logging_1.log; } }));
 var resolver_1 = __nccwpck_require__(1594);
 Object.defineProperty(exports, "registerResolver", ({ enumerable: true, get: function () { return resolver_1.registerResolver; } }));
+Object.defineProperty(exports, "createResolver", ({ enumerable: true, get: function () { return resolver_1.createResolver; } }));
 var uri_parser_1 = __nccwpck_require__(5974);
 Object.defineProperty(exports, "uriToString", ({ enumerable: true, get: function () { return uri_parser_1.uriToString; } }));
 var duration_1 = __nccwpck_require__(2668);
@@ -6053,11 +5108,6 @@ class FilterStack {
         }
         return result;
     }
-    refresh() {
-        for (const filter of this.filters) {
-            filter.refresh();
-        }
-    }
     push(filters) {
         this.filters.unshift(...filters);
     }
@@ -6073,8 +5123,11 @@ class FilterStackFactory {
     push(filterFactories) {
         this.factories.unshift(...filterFactories);
     }
-    createFilter(callStream) {
-        return new FilterStack(this.factories.map((factory) => factory.createFilter(callStream)));
+    clone() {
+        return new FilterStackFactory([...this.factories]);
+    }
+    createFilter() {
+        return new FilterStack(this.factories.map(factory => factory.createFilter()));
     }
 }
 exports.FilterStackFactory = FilterStackFactory;
@@ -6121,7 +5174,6 @@ class BaseFilter {
     receiveTrailers(status) {
         return status;
     }
-    refresh() { }
 }
 exports.BaseFilter = BaseFilter;
 //# sourceMappingURL=filter.js.map
@@ -6191,17 +5243,17 @@ function getProxyInfo() {
         proxyUrl = new url_1.URL(proxyEnv);
     }
     catch (e) {
-        logging_1.log(constants_1.LogVerbosity.ERROR, `cannot parse value of "${envVar}" env var`);
+        (0, logging_1.log)(constants_1.LogVerbosity.ERROR, `cannot parse value of "${envVar}" env var`);
         return {};
     }
     if (proxyUrl.protocol !== 'http:') {
-        logging_1.log(constants_1.LogVerbosity.ERROR, `"${proxyUrl.protocol}" scheme not supported in proxy URI`);
+        (0, logging_1.log)(constants_1.LogVerbosity.ERROR, `"${proxyUrl.protocol}" scheme not supported in proxy URI`);
         return {};
     }
     let userCred = null;
     if (proxyUrl.username) {
         if (proxyUrl.password) {
-            logging_1.log(constants_1.LogVerbosity.INFO, 'userinfo found in proxy URI');
+            (0, logging_1.log)(constants_1.LogVerbosity.INFO, 'userinfo found in proxy URI');
             userCred = `${proxyUrl.username}:${proxyUrl.password}`;
         }
         else {
@@ -6257,19 +5309,19 @@ function mapProxyName(target, options) {
     if (!proxyInfo.address) {
         return noProxyResult;
     }
-    const hostPort = uri_parser_1.splitHostPort(target.path);
+    const hostPort = (0, uri_parser_1.splitHostPort)(target.path);
     if (!hostPort) {
         return noProxyResult;
     }
     const serverHost = hostPort.host;
     for (const host of getNoProxyHostList()) {
         if (host === serverHost) {
-            trace('Not using proxy for target in no_proxy list: ' + uri_parser_1.uriToString(target));
+            trace('Not using proxy for target in no_proxy list: ' + (0, uri_parser_1.uriToString)(target));
             return noProxyResult;
         }
     }
     const extraOptions = {
-        'grpc.http_connect_target': uri_parser_1.uriToString(target),
+        'grpc.http_connect_target': (0, uri_parser_1.uriToString)(target),
     };
     if (proxyInfo.creds) {
         extraOptions['grpc.http_connect_creds'] = proxyInfo.creds;
@@ -6288,7 +5340,7 @@ function getProxiedConnection(address, channelOptions, connectionOptions) {
         return Promise.resolve({});
     }
     const realTarget = channelOptions['grpc.http_connect_target'];
-    const parsedTarget = uri_parser_1.parseUri(realTarget);
+    const parsedTarget = (0, uri_parser_1.parseUri)(realTarget);
     if (parsedTarget === null) {
         return Promise.resolve({});
     }
@@ -6300,7 +5352,7 @@ function getProxiedConnection(address, channelOptions, connectionOptions) {
         Host: parsedTarget.path,
     };
     // Connect to the subchannel address as a proxy
-    if (subchannel_address_1.isTcpSubchannelAddress(address)) {
+    if ((0, subchannel_address_1.isTcpSubchannelAddress)(address)) {
         options.host = address.host;
         options.port = address.port;
     }
@@ -6313,7 +5365,7 @@ function getProxiedConnection(address, channelOptions, connectionOptions) {
                 Buffer.from(channelOptions['grpc.http_connect_creds']).toString('base64');
     }
     options.headers = headers;
-    const proxyAddressString = subchannel_address_1.subchannelAddressToString(address);
+    const proxyAddressString = (0, subchannel_address_1.subchannelAddressToString)(address);
     trace('Using proxy ' + proxyAddressString + ' to connect to ' + options.path);
     return new Promise((resolve, reject) => {
         const request = http.request(options);
@@ -6331,8 +5383,8 @@ function getProxiedConnection(address, channelOptions, connectionOptions) {
                      * connection to a TLS connection.
                      * This is a workaround for https://github.com/nodejs/node/issues/32922
                      * See https://github.com/grpc/grpc-node/pull/1369 for more info. */
-                    const targetPath = resolver_1.getDefaultAuthority(parsedTarget);
-                    const hostPort = uri_parser_1.splitHostPort(targetPath);
+                    const targetPath = (0, resolver_1.getDefaultAuthority)(parsedTarget);
+                    const hostPort = (0, uri_parser_1.splitHostPort)(targetPath);
                     const remoteHost = (_a = hostPort === null || hostPort === void 0 ? void 0 : hostPort.host) !== null && _a !== void 0 ? _a : targetPath;
                     const cts = tls.connect(Object.assign({ host: remoteHost, servername: remoteHost, socket: socket }, connectionOptions), () => {
                         trace('Successfully established a TLS connection to ' +
@@ -6363,7 +5415,7 @@ function getProxiedConnection(address, channelOptions, connectionOptions) {
                 }
             }
             else {
-                logging_1.log(constants_1.LogVerbosity.ERROR, 'Failed to connect to ' +
+                (0, logging_1.log)(constants_1.LogVerbosity.ERROR, 'Failed to connect to ' +
                     options.path +
                     ' through proxy ' +
                     proxyAddressString +
@@ -6372,9 +5424,9 @@ function getProxiedConnection(address, channelOptions, connectionOptions) {
                 reject();
             }
         });
-        request.once('error', (err) => {
+        request.once('error', err => {
             request.removeAllListeners();
-            logging_1.log(constants_1.LogVerbosity.ERROR, 'Failed to connect to proxy ' +
+            (0, logging_1.log)(constants_1.LogVerbosity.ERROR, 'Failed to connect to proxy ' +
                 proxyAddressString +
                 ' with error ' +
                 err.message);
@@ -6410,7 +5462,7 @@ exports.getProxiedConnection = getProxiedConnection;
  *
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.experimental = exports.StatusBuilder = exports.getClientChannel = exports.ServerCredentials = exports.Server = exports.setLogVerbosity = exports.setLogger = exports.load = exports.loadObject = exports.CallCredentials = exports.ChannelCredentials = exports.waitForClientReady = exports.closeClient = exports.Channel = exports.makeGenericClientConstructor = exports.makeClientConstructor = exports.loadPackageDefinition = exports.Client = exports.compressionAlgorithms = exports.propagate = exports.connectivityState = exports.status = exports.logVerbosity = exports.Metadata = exports.credentials = void 0;
+exports.experimental = exports.addAdminServicesToServer = exports.getChannelzHandlers = exports.getChannelzServiceDefinition = exports.InterceptorConfigurationError = exports.InterceptingCall = exports.RequesterBuilder = exports.ListenerBuilder = exports.StatusBuilder = exports.getClientChannel = exports.ServerCredentials = exports.Server = exports.setLogVerbosity = exports.setLogger = exports.load = exports.loadObject = exports.CallCredentials = exports.ChannelCredentials = exports.waitForClientReady = exports.closeClient = exports.Channel = exports.makeGenericClientConstructor = exports.makeClientConstructor = exports.loadPackageDefinition = exports.Client = exports.compressionAlgorithms = exports.propagate = exports.connectivityState = exports.status = exports.logVerbosity = exports.Metadata = exports.credentials = void 0;
 const call_credentials_1 = __nccwpck_require__(1426);
 Object.defineProperty(exports, "CallCredentials", ({ enumerable: true, get: function () { return call_credentials_1.CallCredentials; } }));
 const channel_1 = __nccwpck_require__(3860);
@@ -6476,26 +5528,33 @@ exports.credentials = {
  * Close a Client object.
  * @param client The client to close.
  */
-exports.closeClient = (client) => client.close();
-exports.waitForClientReady = (client, deadline, callback) => client.waitForReady(deadline, callback);
+const closeClient = (client) => client.close();
+exports.closeClient = closeClient;
+const waitForClientReady = (client, deadline, callback) => client.waitForReady(deadline, callback);
+exports.waitForClientReady = waitForClientReady;
 /* eslint-enable @typescript-eslint/no-explicit-any */
 /**** Unimplemented function stubs ****/
 /* eslint-disable @typescript-eslint/no-explicit-any */
-exports.loadObject = (value, options) => {
+const loadObject = (value, options) => {
     throw new Error('Not available in this library. Use @grpc/proto-loader and loadPackageDefinition instead');
 };
-exports.load = (filename, format, options) => {
+exports.loadObject = loadObject;
+const load = (filename, format, options) => {
     throw new Error('Not available in this library. Use @grpc/proto-loader and loadPackageDefinition instead');
 };
-exports.setLogger = (logger) => {
+exports.load = load;
+const setLogger = (logger) => {
     logging.setLogger(logger);
 };
-exports.setLogVerbosity = (verbosity) => {
+exports.setLogger = setLogger;
+const setLogVerbosity = (verbosity) => {
     logging.setLoggerVerbosity(verbosity);
 };
-exports.getClientChannel = (client) => {
+exports.setLogVerbosity = setLogVerbosity;
+const getClientChannel = (client) => {
     return client_1.Client.prototype.getChannel.call(client);
 };
+exports.getClientChannel = getClientChannel;
 var client_interceptors_1 = __nccwpck_require__(2127);
 Object.defineProperty(exports, "ListenerBuilder", ({ enumerable: true, get: function () { return client_interceptors_1.ListenerBuilder; } }));
 Object.defineProperty(exports, "RequesterBuilder", ({ enumerable: true, get: function () { return client_interceptors_1.RequesterBuilder; } }));
@@ -6530,6 +5589,518 @@ const clientVersion = (__nccwpck_require__(6569)/* .version */ .i8);
 
 /***/ }),
 
+/***/ 9672:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2019 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.InternalChannel = void 0;
+const channel_credentials_1 = __nccwpck_require__(4030);
+const resolving_load_balancer_1 = __nccwpck_require__(9192);
+const subchannel_pool_1 = __nccwpck_require__(9780);
+const picker_1 = __nccwpck_require__(1611);
+const constants_1 = __nccwpck_require__(634);
+const filter_stack_1 = __nccwpck_require__(6450);
+const compression_filter_1 = __nccwpck_require__(7616);
+const resolver_1 = __nccwpck_require__(1594);
+const logging_1 = __nccwpck_require__(5993);
+const max_message_size_filter_1 = __nccwpck_require__(659);
+const http_proxy_1 = __nccwpck_require__(4000);
+const uri_parser_1 = __nccwpck_require__(5974);
+const connectivity_state_1 = __nccwpck_require__(878);
+const channelz_1 = __nccwpck_require__(9975);
+const load_balancing_call_1 = __nccwpck_require__(776);
+const deadline_1 = __nccwpck_require__(511);
+const resolving_call_1 = __nccwpck_require__(9909);
+const call_number_1 = __nccwpck_require__(380);
+const control_plane_status_1 = __nccwpck_require__(9129);
+const retrying_call_1 = __nccwpck_require__(8159);
+const subchannel_interface_1 = __nccwpck_require__(2258);
+/**
+ * See https://nodejs.org/api/timers.html#timers_setinterval_callback_delay_args
+ */
+const MAX_TIMEOUT_TIME = 2147483647;
+const MIN_IDLE_TIMEOUT_MS = 1000;
+// 30 minutes
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const RETRY_THROTTLER_MAP = new Map();
+const DEFAULT_RETRY_BUFFER_SIZE_BYTES = 1 << 24; // 16 MB
+const DEFAULT_PER_RPC_RETRY_BUFFER_SIZE_BYTES = 1 << 20; // 1 MB
+class ChannelSubchannelWrapper extends subchannel_interface_1.BaseSubchannelWrapper {
+    constructor(childSubchannel, channel) {
+        super(childSubchannel);
+        this.channel = channel;
+        this.refCount = 0;
+        this.subchannelStateListener = (subchannel, previousState, newState, keepaliveTime) => {
+            channel.throttleKeepalive(keepaliveTime);
+        };
+        childSubchannel.addConnectivityStateListener(this.subchannelStateListener);
+    }
+    ref() {
+        this.child.ref();
+        this.refCount += 1;
+    }
+    unref() {
+        this.child.unref();
+        this.refCount -= 1;
+        if (this.refCount <= 0) {
+            this.child.removeConnectivityStateListener(this.subchannelStateListener);
+            this.channel.removeWrappedSubchannel(this);
+        }
+    }
+}
+class InternalChannel {
+    constructor(target, credentials, options) {
+        var _a, _b, _c, _d, _e, _f, _g, _h;
+        this.credentials = credentials;
+        this.options = options;
+        this.connectivityState = connectivity_state_1.ConnectivityState.IDLE;
+        this.currentPicker = new picker_1.UnavailablePicker();
+        /**
+         * Calls queued up to get a call config. Should only be populated before the
+         * first time the resolver returns a result, which includes the ConfigSelector.
+         */
+        this.configSelectionQueue = [];
+        this.pickQueue = [];
+        this.connectivityStateWatchers = [];
+        this.configSelector = null;
+        /**
+         * This is the error from the name resolver if it failed most recently. It
+         * is only used to end calls that start while there is no config selector
+         * and the name resolver is in backoff, so it should be nulled if
+         * configSelector becomes set or the channel state becomes anything other
+         * than TRANSIENT_FAILURE.
+         */
+        this.currentResolutionError = null;
+        this.wrappedSubchannels = new Set();
+        this.callCount = 0;
+        this.idleTimer = null;
+        // Channelz info
+        this.channelzEnabled = true;
+        this.callTracker = new channelz_1.ChannelzCallTracker();
+        this.childrenTracker = new channelz_1.ChannelzChildrenTracker();
+        if (typeof target !== 'string') {
+            throw new TypeError('Channel target must be a string');
+        }
+        if (!(credentials instanceof channel_credentials_1.ChannelCredentials)) {
+            throw new TypeError('Channel credentials must be a ChannelCredentials object');
+        }
+        if (options) {
+            if (typeof options !== 'object') {
+                throw new TypeError('Channel options must be an object');
+            }
+        }
+        this.originalTarget = target;
+        const originalTargetUri = (0, uri_parser_1.parseUri)(target);
+        if (originalTargetUri === null) {
+            throw new Error(`Could not parse target name "${target}"`);
+        }
+        /* This ensures that the target has a scheme that is registered with the
+         * resolver */
+        const defaultSchemeMapResult = (0, resolver_1.mapUriDefaultScheme)(originalTargetUri);
+        if (defaultSchemeMapResult === null) {
+            throw new Error(`Could not find a default scheme for target name "${target}"`);
+        }
+        this.callRefTimer = setInterval(() => { }, MAX_TIMEOUT_TIME);
+        (_b = (_a = this.callRefTimer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+        if (this.options['grpc.enable_channelz'] === 0) {
+            this.channelzEnabled = false;
+        }
+        this.channelzTrace = new channelz_1.ChannelzTrace();
+        this.channelzRef = (0, channelz_1.registerChannelzChannel)(target, () => this.getChannelzInfo(), this.channelzEnabled);
+        if (this.channelzEnabled) {
+            this.channelzTrace.addTrace('CT_INFO', 'Channel created');
+        }
+        if (this.options['grpc.default_authority']) {
+            this.defaultAuthority = this.options['grpc.default_authority'];
+        }
+        else {
+            this.defaultAuthority = (0, resolver_1.getDefaultAuthority)(defaultSchemeMapResult);
+        }
+        const proxyMapResult = (0, http_proxy_1.mapProxyName)(defaultSchemeMapResult, options);
+        this.target = proxyMapResult.target;
+        this.options = Object.assign({}, this.options, proxyMapResult.extraOptions);
+        /* The global boolean parameter to getSubchannelPool has the inverse meaning to what
+         * the grpc.use_local_subchannel_pool channel option means. */
+        this.subchannelPool = (0, subchannel_pool_1.getSubchannelPool)(((_c = options['grpc.use_local_subchannel_pool']) !== null && _c !== void 0 ? _c : 0) === 0);
+        this.retryBufferTracker = new retrying_call_1.MessageBufferTracker((_d = options['grpc.retry_buffer_size']) !== null && _d !== void 0 ? _d : DEFAULT_RETRY_BUFFER_SIZE_BYTES, (_e = options['grpc.per_rpc_retry_buffer_size']) !== null && _e !== void 0 ? _e : DEFAULT_PER_RPC_RETRY_BUFFER_SIZE_BYTES);
+        this.keepaliveTime = (_f = options['grpc.keepalive_time_ms']) !== null && _f !== void 0 ? _f : -1;
+        this.idleTimeoutMs = Math.max((_g = options['grpc.client_idle_timeout_ms']) !== null && _g !== void 0 ? _g : DEFAULT_IDLE_TIMEOUT_MS, MIN_IDLE_TIMEOUT_MS);
+        const channelControlHelper = {
+            createSubchannel: (subchannelAddress, subchannelArgs) => {
+                const subchannel = this.subchannelPool.getOrCreateSubchannel(this.target, subchannelAddress, Object.assign({}, this.options, subchannelArgs), this.credentials);
+                subchannel.throttleKeepalive(this.keepaliveTime);
+                if (this.channelzEnabled) {
+                    this.channelzTrace.addTrace('CT_INFO', 'Created subchannel or used existing subchannel', subchannel.getChannelzRef());
+                }
+                const wrappedSubchannel = new ChannelSubchannelWrapper(subchannel, this);
+                this.wrappedSubchannels.add(wrappedSubchannel);
+                return wrappedSubchannel;
+            },
+            updateState: (connectivityState, picker) => {
+                this.currentPicker = picker;
+                const queueCopy = this.pickQueue.slice();
+                this.pickQueue = [];
+                this.callRefTimerUnref();
+                for (const call of queueCopy) {
+                    call.doPick();
+                }
+                this.updateState(connectivityState);
+            },
+            requestReresolution: () => {
+                // This should never be called.
+                throw new Error('Resolving load balancer should never call requestReresolution');
+            },
+            addChannelzChild: (child) => {
+                if (this.channelzEnabled) {
+                    this.childrenTracker.refChild(child);
+                }
+            },
+            removeChannelzChild: (child) => {
+                if (this.channelzEnabled) {
+                    this.childrenTracker.unrefChild(child);
+                }
+            },
+        };
+        this.resolvingLoadBalancer = new resolving_load_balancer_1.ResolvingLoadBalancer(this.target, channelControlHelper, options, (serviceConfig, configSelector) => {
+            if (serviceConfig.retryThrottling) {
+                RETRY_THROTTLER_MAP.set(this.getTarget(), new retrying_call_1.RetryThrottler(serviceConfig.retryThrottling.maxTokens, serviceConfig.retryThrottling.tokenRatio, RETRY_THROTTLER_MAP.get(this.getTarget())));
+            }
+            else {
+                RETRY_THROTTLER_MAP.delete(this.getTarget());
+            }
+            if (this.channelzEnabled) {
+                this.channelzTrace.addTrace('CT_INFO', 'Address resolution succeeded');
+            }
+            this.configSelector = configSelector;
+            this.currentResolutionError = null;
+            /* We process the queue asynchronously to ensure that the corresponding
+             * load balancer update has completed. */
+            process.nextTick(() => {
+                const localQueue = this.configSelectionQueue;
+                this.configSelectionQueue = [];
+                this.callRefTimerUnref();
+                for (const call of localQueue) {
+                    call.getConfig();
+                }
+                this.configSelectionQueue = [];
+            });
+        }, status => {
+            if (this.channelzEnabled) {
+                this.channelzTrace.addTrace('CT_WARNING', 'Address resolution failed with code ' +
+                    status.code +
+                    ' and details "' +
+                    status.details +
+                    '"');
+            }
+            if (this.configSelectionQueue.length > 0) {
+                this.trace('Name resolution failed with calls queued for config selection');
+            }
+            if (this.configSelector === null) {
+                this.currentResolutionError = Object.assign(Object.assign({}, (0, control_plane_status_1.restrictControlPlaneStatusCode)(status.code, status.details)), { metadata: status.metadata });
+            }
+            const localQueue = this.configSelectionQueue;
+            this.configSelectionQueue = [];
+            this.callRefTimerUnref();
+            for (const call of localQueue) {
+                call.reportResolverError(status);
+            }
+        });
+        this.filterStackFactory = new filter_stack_1.FilterStackFactory([
+            new max_message_size_filter_1.MaxMessageSizeFilterFactory(this.options),
+            new compression_filter_1.CompressionFilterFactory(this, this.options),
+        ]);
+        this.trace('Channel constructed with options ' +
+            JSON.stringify(options, undefined, 2));
+        const error = new Error();
+        (0, logging_1.trace)(constants_1.LogVerbosity.DEBUG, 'channel_stacktrace', '(' +
+            this.channelzRef.id +
+            ') ' +
+            'Channel constructed \n' +
+            ((_h = error.stack) === null || _h === void 0 ? void 0 : _h.substring(error.stack.indexOf('\n') + 1)));
+    }
+    getChannelzInfo() {
+        return {
+            target: this.originalTarget,
+            state: this.connectivityState,
+            trace: this.channelzTrace,
+            callTracker: this.callTracker,
+            children: this.childrenTracker.getChildLists(),
+        };
+    }
+    trace(text, verbosityOverride) {
+        (0, logging_1.trace)(verbosityOverride !== null && verbosityOverride !== void 0 ? verbosityOverride : constants_1.LogVerbosity.DEBUG, 'channel', '(' + this.channelzRef.id + ') ' + (0, uri_parser_1.uriToString)(this.target) + ' ' + text);
+    }
+    callRefTimerRef() {
+        var _a, _b, _c, _d;
+        // If the hasRef function does not exist, always run the code
+        if (!((_b = (_a = this.callRefTimer).hasRef) === null || _b === void 0 ? void 0 : _b.call(_a))) {
+            this.trace('callRefTimer.ref | configSelectionQueue.length=' +
+                this.configSelectionQueue.length +
+                ' pickQueue.length=' +
+                this.pickQueue.length);
+            (_d = (_c = this.callRefTimer).ref) === null || _d === void 0 ? void 0 : _d.call(_c);
+        }
+    }
+    callRefTimerUnref() {
+        var _a, _b;
+        // If the hasRef function does not exist, always run the code
+        if (!this.callRefTimer.hasRef || this.callRefTimer.hasRef()) {
+            this.trace('callRefTimer.unref | configSelectionQueue.length=' +
+                this.configSelectionQueue.length +
+                ' pickQueue.length=' +
+                this.pickQueue.length);
+            (_b = (_a = this.callRefTimer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+        }
+    }
+    removeConnectivityStateWatcher(watcherObject) {
+        const watcherIndex = this.connectivityStateWatchers.findIndex(value => value === watcherObject);
+        if (watcherIndex >= 0) {
+            this.connectivityStateWatchers.splice(watcherIndex, 1);
+        }
+    }
+    updateState(newState) {
+        (0, logging_1.trace)(constants_1.LogVerbosity.DEBUG, 'connectivity_state', '(' +
+            this.channelzRef.id +
+            ') ' +
+            (0, uri_parser_1.uriToString)(this.target) +
+            ' ' +
+            connectivity_state_1.ConnectivityState[this.connectivityState] +
+            ' -> ' +
+            connectivity_state_1.ConnectivityState[newState]);
+        if (this.channelzEnabled) {
+            this.channelzTrace.addTrace('CT_INFO', connectivity_state_1.ConnectivityState[this.connectivityState] +
+                ' -> ' +
+                connectivity_state_1.ConnectivityState[newState]);
+        }
+        this.connectivityState = newState;
+        const watchersCopy = this.connectivityStateWatchers.slice();
+        for (const watcherObject of watchersCopy) {
+            if (newState !== watcherObject.currentState) {
+                if (watcherObject.timer) {
+                    clearTimeout(watcherObject.timer);
+                }
+                this.removeConnectivityStateWatcher(watcherObject);
+                watcherObject.callback();
+            }
+        }
+        if (newState !== connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
+            this.currentResolutionError = null;
+        }
+    }
+    throttleKeepalive(newKeepaliveTime) {
+        if (newKeepaliveTime > this.keepaliveTime) {
+            this.keepaliveTime = newKeepaliveTime;
+            for (const wrappedSubchannel of this.wrappedSubchannels) {
+                wrappedSubchannel.throttleKeepalive(newKeepaliveTime);
+            }
+        }
+    }
+    removeWrappedSubchannel(wrappedSubchannel) {
+        this.wrappedSubchannels.delete(wrappedSubchannel);
+    }
+    doPick(metadata, extraPickInfo) {
+        return this.currentPicker.pick({
+            metadata: metadata,
+            extraPickInfo: extraPickInfo,
+        });
+    }
+    queueCallForPick(call) {
+        this.pickQueue.push(call);
+        this.callRefTimerRef();
+    }
+    getConfig(method, metadata) {
+        this.resolvingLoadBalancer.exitIdle();
+        if (this.configSelector) {
+            return {
+                type: 'SUCCESS',
+                config: this.configSelector(method, metadata),
+            };
+        }
+        else {
+            if (this.currentResolutionError) {
+                return {
+                    type: 'ERROR',
+                    error: this.currentResolutionError,
+                };
+            }
+            else {
+                return {
+                    type: 'NONE',
+                };
+            }
+        }
+    }
+    queueCallForConfig(call) {
+        this.configSelectionQueue.push(call);
+        this.callRefTimerRef();
+    }
+    enterIdle() {
+        this.resolvingLoadBalancer.destroy();
+        this.updateState(connectivity_state_1.ConnectivityState.IDLE);
+        this.currentPicker = new picker_1.QueuePicker(this.resolvingLoadBalancer);
+    }
+    maybeStartIdleTimer() {
+        var _a, _b;
+        if (this.callCount === 0) {
+            this.idleTimer = setTimeout(() => {
+                this.trace('Idle timer triggered after ' +
+                    this.idleTimeoutMs +
+                    'ms of inactivity');
+                this.enterIdle();
+            }, this.idleTimeoutMs);
+            (_b = (_a = this.idleTimer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+        }
+    }
+    onCallStart() {
+        if (this.channelzEnabled) {
+            this.callTracker.addCallStarted();
+        }
+        this.callCount += 1;
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
+    }
+    onCallEnd(status) {
+        if (this.channelzEnabled) {
+            if (status.code === constants_1.Status.OK) {
+                this.callTracker.addCallSucceeded();
+            }
+            else {
+                this.callTracker.addCallFailed();
+            }
+        }
+        this.callCount -= 1;
+        this.maybeStartIdleTimer();
+    }
+    createLoadBalancingCall(callConfig, method, host, credentials, deadline) {
+        const callNumber = (0, call_number_1.getNextCallNumber)();
+        this.trace('createLoadBalancingCall [' + callNumber + '] method="' + method + '"');
+        return new load_balancing_call_1.LoadBalancingCall(this, callConfig, method, host, credentials, deadline, callNumber);
+    }
+    createRetryingCall(callConfig, method, host, credentials, deadline) {
+        const callNumber = (0, call_number_1.getNextCallNumber)();
+        this.trace('createRetryingCall [' + callNumber + '] method="' + method + '"');
+        return new retrying_call_1.RetryingCall(this, callConfig, method, host, credentials, deadline, callNumber, this.retryBufferTracker, RETRY_THROTTLER_MAP.get(this.getTarget()));
+    }
+    createInnerCall(callConfig, method, host, credentials, deadline) {
+        // Create a RetryingCall if retries are enabled
+        if (this.options['grpc.enable_retries'] === 0) {
+            return this.createLoadBalancingCall(callConfig, method, host, credentials, deadline);
+        }
+        else {
+            return this.createRetryingCall(callConfig, method, host, credentials, deadline);
+        }
+    }
+    createResolvingCall(method, deadline, host, parentCall, propagateFlags) {
+        const callNumber = (0, call_number_1.getNextCallNumber)();
+        this.trace('createResolvingCall [' +
+            callNumber +
+            '] method="' +
+            method +
+            '", deadline=' +
+            (0, deadline_1.deadlineToString)(deadline));
+        const finalOptions = {
+            deadline: deadline,
+            flags: propagateFlags !== null && propagateFlags !== void 0 ? propagateFlags : constants_1.Propagate.DEFAULTS,
+            host: host !== null && host !== void 0 ? host : this.defaultAuthority,
+            parentCall: parentCall,
+        };
+        const call = new resolving_call_1.ResolvingCall(this, method, finalOptions, this.filterStackFactory.clone(), this.credentials._getCallCredentials(), callNumber);
+        this.onCallStart();
+        call.addStatusWatcher(status => {
+            this.onCallEnd(status);
+        });
+        return call;
+    }
+    close() {
+        this.resolvingLoadBalancer.destroy();
+        this.updateState(connectivity_state_1.ConnectivityState.SHUTDOWN);
+        clearInterval(this.callRefTimer);
+        if (this.channelzEnabled) {
+            (0, channelz_1.unregisterChannelzRef)(this.channelzRef);
+        }
+        this.subchannelPool.unrefUnusedSubchannels();
+    }
+    getTarget() {
+        return (0, uri_parser_1.uriToString)(this.target);
+    }
+    getConnectivityState(tryToConnect) {
+        const connectivityState = this.connectivityState;
+        if (tryToConnect) {
+            this.resolvingLoadBalancer.exitIdle();
+            this.maybeStartIdleTimer();
+        }
+        return connectivityState;
+    }
+    watchConnectivityState(currentState, deadline, callback) {
+        if (this.connectivityState === connectivity_state_1.ConnectivityState.SHUTDOWN) {
+            throw new Error('Channel has been shut down');
+        }
+        let timer = null;
+        if (deadline !== Infinity) {
+            const deadlineDate = deadline instanceof Date ? deadline : new Date(deadline);
+            const now = new Date();
+            if (deadline === -Infinity || deadlineDate <= now) {
+                process.nextTick(callback, new Error('Deadline passed without connectivity state change'));
+                return;
+            }
+            timer = setTimeout(() => {
+                this.removeConnectivityStateWatcher(watcherObject);
+                callback(new Error('Deadline passed without connectivity state change'));
+            }, deadlineDate.getTime() - now.getTime());
+        }
+        const watcherObject = {
+            currentState,
+            callback,
+            timer,
+        };
+        this.connectivityStateWatchers.push(watcherObject);
+    }
+    /**
+     * Get the channelz reference object for this channel. The returned value is
+     * garbage if channelz is disabled for this channel.
+     * @returns
+     */
+    getChannelzRef() {
+        return this.channelzRef;
+    }
+    createCall(method, deadline, host, parentCall, propagateFlags) {
+        if (typeof method !== 'string') {
+            throw new TypeError('Channel#createCall: method must be a string');
+        }
+        if (!(typeof deadline === 'number' || deadline instanceof Date)) {
+            throw new TypeError('Channel#createCall: deadline must be a number or Date');
+        }
+        if (this.connectivityState === connectivity_state_1.ConnectivityState.SHUTDOWN) {
+            throw new Error('Channel has been shut down');
+        }
+        return this.createResolvingCall(method, deadline, host, parentCall, propagateFlags);
+    }
+}
+exports.InternalChannel = InternalChannel;
+//# sourceMappingURL=internal-channel.js.map
+
+/***/ }),
+
 /***/ 7559:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -6561,6 +6132,7 @@ class ChildLoadBalancerHandler {
         this.channelControlHelper = channelControlHelper;
         this.currentChild = null;
         this.pendingChild = null;
+        this.latestConfig = null;
         this.ChildPolicyHelper = class {
             constructor(parent) {
                 this.parent = parent;
@@ -6572,7 +6144,7 @@ class ChildLoadBalancerHandler {
             updateState(connectivityState, picker) {
                 var _a;
                 if (this.calledByPendingChild()) {
-                    if (connectivityState !== connectivity_state_1.ConnectivityState.READY) {
+                    if (connectivityState === connectivity_state_1.ConnectivityState.CONNECTING) {
                         return;
                     }
                     (_a = this.parent.currentChild) === null || _a === void 0 ? void 0 : _a.destroy();
@@ -6608,6 +6180,9 @@ class ChildLoadBalancerHandler {
             }
         };
     }
+    configUpdateRequiresNewPolicyInstance(oldConfig, newConfig) {
+        return oldConfig.getLoadBalancerName() !== newConfig.getLoadBalancerName();
+    }
     /**
      * Prerequisites: lbConfig !== null and lbConfig.name is registered
      * @param addressList
@@ -6617,9 +6192,10 @@ class ChildLoadBalancerHandler {
     updateAddressList(addressList, lbConfig, attributes) {
         let childToUpdate;
         if (this.currentChild === null ||
-            this.currentChild.getTypeName() !== lbConfig.getLoadBalancerName()) {
+            this.latestConfig === null ||
+            this.configUpdateRequiresNewPolicyInstance(this.latestConfig, lbConfig)) {
             const newHelper = new this.ChildPolicyHelper(this);
-            const newChild = load_balancer_1.createLoadBalancer(lbConfig, newHelper);
+            const newChild = (0, load_balancer_1.createLoadBalancer)(lbConfig, newHelper);
             newHelper.setChild(newChild);
             if (this.currentChild === null) {
                 this.currentChild = newChild;
@@ -6641,6 +6217,7 @@ class ChildLoadBalancerHandler {
                 childToUpdate = this.pendingChild;
             }
         }
+        this.latestConfig = lbConfig;
         childToUpdate.updateAddressList(addressList, lbConfig, attributes);
     }
     exitIdle() {
@@ -6660,6 +6237,10 @@ class ChildLoadBalancerHandler {
         }
     }
     destroy() {
+        /* Note: state updates are only propagated from the child balancer if that
+         * object is equal to this.currentChild or this.pendingChild. Since this
+         * function sets both of those to null, no further state updates will
+         * occur after this function returns. */
         if (this.currentChild) {
             this.currentChild.destroy();
             this.currentChild = null;
@@ -6699,31 +6280,36 @@ exports.ChildLoadBalancerHandler = ChildLoadBalancerHandler;
  * limitations under the License.
  *
  */
+var _a;
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.setup = exports.OutlierDetectionLoadBalancer = exports.OutlierDetectionLoadBalancingConfig = void 0;
 const connectivity_state_1 = __nccwpck_require__(878);
 const constants_1 = __nccwpck_require__(634);
 const duration_1 = __nccwpck_require__(2668);
 const experimental_1 = __nccwpck_require__(7626);
-const filter_1 = __nccwpck_require__(3392);
 const load_balancer_1 = __nccwpck_require__(2680);
 const load_balancer_child_handler_1 = __nccwpck_require__(7559);
 const picker_1 = __nccwpck_require__(1611);
 const subchannel_address_1 = __nccwpck_require__(9905);
 const subchannel_interface_1 = __nccwpck_require__(2258);
+const logging = __nccwpck_require__(5993);
+const TRACER_NAME = 'outlier_detection';
+function trace(text) {
+    logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, text);
+}
 const TYPE_NAME = 'outlier_detection';
-const OUTLIER_DETECTION_ENABLED = process.env.GRPC_EXPERIMENTAL_ENABLE_OUTLIER_DETECTION === 'true';
+const OUTLIER_DETECTION_ENABLED = ((_a = process.env.GRPC_EXPERIMENTAL_ENABLE_OUTLIER_DETECTION) !== null && _a !== void 0 ? _a : 'true') === 'true';
 const defaultSuccessRateEjectionConfig = {
     stdev_factor: 1900,
     enforcement_percentage: 100,
     minimum_hosts: 5,
-    request_volume: 100
+    request_volume: 100,
 };
 const defaultFailurePercentageEjectionConfig = {
     threshold: 85,
     enforcement_percentage: 100,
     minimum_hosts: 5,
-    request_volume: 50
+    request_volume: 50,
 };
 function validateFieldType(obj, fieldName, expectedType, objectName) {
     if (fieldName in obj && typeof obj[fieldName] !== expectedType) {
@@ -6734,10 +6320,13 @@ function validateFieldType(obj, fieldName, expectedType, objectName) {
 function validatePositiveDuration(obj, fieldName, objectName) {
     const fullFieldName = objectName ? `${objectName}.${fieldName}` : fieldName;
     if (fieldName in obj) {
-        if (!duration_1.isDuration(obj[fieldName])) {
+        if (!(0, duration_1.isDuration)(obj[fieldName])) {
             throw new Error(`outlier detection config ${fullFieldName} parse error: expected Duration, got ${typeof obj[fieldName]}`);
         }
-        if (!(obj[fieldName].seconds >= 0 && obj[fieldName].seconds <= 315576000000 && obj[fieldName].nanos >= 0 && obj[fieldName].nanos <= 999999999)) {
+        if (!(obj[fieldName].seconds >= 0 &&
+            obj[fieldName].seconds <= 315576000000 &&
+            obj[fieldName].nanos >= 0 &&
+            obj[fieldName].nanos <= 999999999)) {
             throw new Error(`outlier detection config ${fullFieldName} parse error: values out of range for non-negative Duaration`);
         }
     }
@@ -6752,25 +6341,31 @@ function validatePercentage(obj, fieldName, objectName) {
 class OutlierDetectionLoadBalancingConfig {
     constructor(intervalMs, baseEjectionTimeMs, maxEjectionTimeMs, maxEjectionPercent, successRateEjection, failurePercentageEjection, childPolicy) {
         this.childPolicy = childPolicy;
+        if (childPolicy.length > 0 &&
+            childPolicy[0].getLoadBalancerName() === 'pick_first') {
+            throw new Error('outlier_detection LB policy cannot have a pick_first child policy');
+        }
         this.intervalMs = intervalMs !== null && intervalMs !== void 0 ? intervalMs : 10000;
         this.baseEjectionTimeMs = baseEjectionTimeMs !== null && baseEjectionTimeMs !== void 0 ? baseEjectionTimeMs : 30000;
         this.maxEjectionTimeMs = maxEjectionTimeMs !== null && maxEjectionTimeMs !== void 0 ? maxEjectionTimeMs : 300000;
         this.maxEjectionPercent = maxEjectionPercent !== null && maxEjectionPercent !== void 0 ? maxEjectionPercent : 10;
-        this.successRateEjection = successRateEjection ? Object.assign(Object.assign({}, defaultSuccessRateEjectionConfig), successRateEjection) : null;
-        this.failurePercentageEjection = failurePercentageEjection ? Object.assign(Object.assign({}, defaultFailurePercentageEjectionConfig), failurePercentageEjection) : null;
+        this.successRateEjection = successRateEjection
+            ? Object.assign(Object.assign({}, defaultSuccessRateEjectionConfig), successRateEjection) : null;
+        this.failurePercentageEjection = failurePercentageEjection
+            ? Object.assign(Object.assign({}, defaultFailurePercentageEjectionConfig), failurePercentageEjection) : null;
     }
     getLoadBalancerName() {
         return TYPE_NAME;
     }
     toJsonObject() {
         return {
-            interval: duration_1.msToDuration(this.intervalMs),
-            base_ejection_time: duration_1.msToDuration(this.baseEjectionTimeMs),
-            max_ejection_time: duration_1.msToDuration(this.maxEjectionTimeMs),
+            interval: (0, duration_1.msToDuration)(this.intervalMs),
+            base_ejection_time: (0, duration_1.msToDuration)(this.baseEjectionTimeMs),
+            max_ejection_time: (0, duration_1.msToDuration)(this.maxEjectionTimeMs),
             max_ejection_percent: this.maxEjectionPercent,
             success_rate_ejection: this.successRateEjection,
             failure_percentage_ejection: this.failurePercentageEjection,
-            child_policy: this.childPolicy.map(policy => policy.toJsonObject())
+            child_policy: this.childPolicy.map(policy => policy.toJsonObject()),
         };
     }
     getIntervalMs() {
@@ -6821,7 +6416,7 @@ class OutlierDetectionLoadBalancingConfig {
             validateFieldType(obj.failure_percentage_ejection, 'minimum_hosts', 'number', 'failure_percentage_ejection');
             validateFieldType(obj.failure_percentage_ejection, 'request_volume', 'number', 'failure_percentage_ejection');
         }
-        return new OutlierDetectionLoadBalancingConfig(obj.interval ? duration_1.durationToMs(obj.interval) : null, obj.base_ejection_time ? duration_1.durationToMs(obj.base_ejection_time) : null, obj.max_ejection_time ? duration_1.durationToMs(obj.max_ejection_time) : null, (_a = obj.max_ejection_percent) !== null && _a !== void 0 ? _a : null, obj.success_rate_ejection, obj.failure_percentage_ejection, obj.child_policy.map(load_balancer_1.validateLoadBalancingConfig));
+        return new OutlierDetectionLoadBalancingConfig(obj.interval ? (0, duration_1.durationToMs)(obj.interval) : null, obj.base_ejection_time ? (0, duration_1.durationToMs)(obj.base_ejection_time) : null, obj.max_ejection_time ? (0, duration_1.durationToMs)(obj.max_ejection_time) : null, (_a = obj.max_ejection_percent) !== null && _a !== void 0 ? _a : null, obj.success_rate_ejection, obj.failure_percentage_ejection, obj.child_policy.map(load_balancer_1.validateLoadBalancingConfig));
     }
 }
 exports.OutlierDetectionLoadBalancingConfig = OutlierDetectionLoadBalancingConfig;
@@ -6829,18 +6424,26 @@ class OutlierDetectionSubchannelWrapper extends subchannel_interface_1.BaseSubch
     constructor(childSubchannel, mapEntry) {
         super(childSubchannel);
         this.mapEntry = mapEntry;
-        this.childSubchannelState = connectivity_state_1.ConnectivityState.IDLE;
         this.stateListeners = [];
         this.ejected = false;
         this.refCount = 0;
-        childSubchannel.addConnectivityStateListener((subchannel, previousState, newState) => {
+        this.childSubchannelState = childSubchannel.getConnectivityState();
+        childSubchannel.addConnectivityStateListener((subchannel, previousState, newState, keepaliveTime) => {
             this.childSubchannelState = newState;
             if (!this.ejected) {
                 for (const listener of this.stateListeners) {
-                    listener(this, previousState, newState);
+                    listener(this, previousState, newState, keepaliveTime);
                 }
             }
         });
+    }
+    getConnectivityState() {
+        if (this.ejected) {
+            return connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE;
+        }
+        else {
+            return this.childSubchannelState;
+        }
     }
     /**
      * Add a listener function to be called whenever the wrapper's
@@ -6880,13 +6483,13 @@ class OutlierDetectionSubchannelWrapper extends subchannel_interface_1.BaseSubch
     eject() {
         this.ejected = true;
         for (const listener of this.stateListeners) {
-            listener(this, this.childSubchannelState, connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE);
+            listener(this, this.childSubchannelState, connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, -1);
         }
     }
     uneject() {
         this.ejected = false;
         for (const listener of this.stateListeners) {
-            listener(this, connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, this.childSubchannelState);
+            listener(this, connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, this.childSubchannelState, -1);
         }
     }
     getMapEntry() {
@@ -6899,7 +6502,7 @@ class OutlierDetectionSubchannelWrapper extends subchannel_interface_1.BaseSubch
 function createEmptyBucket() {
     return {
         success: 0,
-        failure: 0
+        failure: 0,
     };
 }
 class CallCounter {
@@ -6924,32 +6527,10 @@ class CallCounter {
         return this.inactiveBucket.failure;
     }
 }
-class OutlierDetectionCounterFilter extends filter_1.BaseFilter {
-    constructor(callCounter) {
-        super();
-        this.callCounter = callCounter;
-    }
-    receiveTrailers(status) {
-        if (status.code === constants_1.Status.OK) {
-            this.callCounter.addSuccess();
-        }
-        else {
-            this.callCounter.addFailure();
-        }
-        return status;
-    }
-}
-class OutlierDetectionCounterFilterFactory {
-    constructor(callCounter) {
-        this.callCounter = callCounter;
-    }
-    createFilter(callStream) {
-        return new OutlierDetectionCounterFilter(this.callCounter);
-    }
-}
 class OutlierDetectionPicker {
-    constructor(wrappedPicker) {
+    constructor(wrappedPicker, countCalls) {
         this.wrappedPicker = wrappedPicker;
+        this.countCalls = countCalls;
     }
     pick(pickArgs) {
         const wrappedPick = this.wrappedPicker.pick(pickArgs);
@@ -6957,10 +6538,23 @@ class OutlierDetectionPicker {
             const subchannelWrapper = wrappedPick.subchannel;
             const mapEntry = subchannelWrapper.getMapEntry();
             if (mapEntry) {
-                return Object.assign(Object.assign({}, wrappedPick), { subchannel: subchannelWrapper.getWrappedSubchannel(), extraFilterFactories: [...wrappedPick.extraFilterFactories, new OutlierDetectionCounterFilterFactory(mapEntry.counter)] });
+                let onCallEnded = wrappedPick.onCallEnded;
+                if (this.countCalls) {
+                    onCallEnded = statusCode => {
+                        var _a;
+                        if (statusCode === constants_1.Status.OK) {
+                            mapEntry.counter.addSuccess();
+                        }
+                        else {
+                            mapEntry.counter.addFailure();
+                        }
+                        (_a = wrappedPick.onCallEnded) === null || _a === void 0 ? void 0 : _a.call(wrappedPick, statusCode);
+                    };
+                }
+                return Object.assign(Object.assign({}, wrappedPick), { subchannel: subchannelWrapper.getWrappedSubchannel(), onCallEnded: onCallEnded });
             }
             else {
-                return wrappedPick;
+                return Object.assign(Object.assign({}, wrappedPick), { subchannel: subchannelWrapper.getWrappedSubchannel() });
             }
         }
         else {
@@ -6972,25 +6566,35 @@ class OutlierDetectionLoadBalancer {
     constructor(channelControlHelper) {
         this.addressMap = new Map();
         this.latestConfig = null;
-        this.childBalancer = new load_balancer_child_handler_1.ChildLoadBalancerHandler(experimental_1.createChildChannelControlHelper(channelControlHelper, {
+        this.timerStartTime = null;
+        this.childBalancer = new load_balancer_child_handler_1.ChildLoadBalancerHandler((0, experimental_1.createChildChannelControlHelper)(channelControlHelper, {
             createSubchannel: (subchannelAddress, subchannelArgs) => {
                 const originalSubchannel = channelControlHelper.createSubchannel(subchannelAddress, subchannelArgs);
-                const mapEntry = this.addressMap.get(subchannel_address_1.subchannelAddressToString(subchannelAddress));
+                const mapEntry = this.addressMap.get((0, subchannel_address_1.subchannelAddressToString)(subchannelAddress));
                 const subchannelWrapper = new OutlierDetectionSubchannelWrapper(originalSubchannel, mapEntry);
+                if ((mapEntry === null || mapEntry === void 0 ? void 0 : mapEntry.currentEjectionTimestamp) !== null) {
+                    // If the address is ejected, propagate that to the new subchannel wrapper
+                    subchannelWrapper.eject();
+                }
                 mapEntry === null || mapEntry === void 0 ? void 0 : mapEntry.subchannelWrappers.push(subchannelWrapper);
                 return subchannelWrapper;
             },
             updateState: (connectivityState, picker) => {
                 if (connectivityState === connectivity_state_1.ConnectivityState.READY) {
-                    channelControlHelper.updateState(connectivityState, new OutlierDetectionPicker(picker));
+                    channelControlHelper.updateState(connectivityState, new OutlierDetectionPicker(picker, this.isCountingEnabled()));
                 }
                 else {
                     channelControlHelper.updateState(connectivityState, picker);
                 }
-            }
+            },
         }));
         this.ejectionTimer = setInterval(() => { }, 0);
         clearInterval(this.ejectionTimer);
+    }
+    isCountingEnabled() {
+        return (this.latestConfig !== null &&
+            (this.latestConfig.getSuccessRateEjectionConfig() !== null ||
+                this.latestConfig.getFailurePercentageEjectionConfig() !== null));
     }
     getCurrentEjectionPercent() {
         let ejectionCount = 0;
@@ -7009,34 +6613,54 @@ class OutlierDetectionLoadBalancer {
         if (!successRateConfig) {
             return;
         }
+        trace('Running success rate check');
         // Step 1
         const targetRequestVolume = successRateConfig.request_volume;
         let addresesWithTargetVolume = 0;
         const successRates = [];
-        for (const mapEntry of this.addressMap.values()) {
+        for (const [address, mapEntry] of this.addressMap) {
             const successes = mapEntry.counter.getLastSuccesses();
             const failures = mapEntry.counter.getLastFailures();
+            trace('Stats for ' +
+                address +
+                ': successes=' +
+                successes +
+                ' failures=' +
+                failures +
+                ' targetRequestVolume=' +
+                targetRequestVolume);
             if (successes + failures >= targetRequestVolume) {
                 addresesWithTargetVolume += 1;
                 successRates.push(successes / (successes + failures));
             }
         }
+        trace('Found ' +
+            addresesWithTargetVolume +
+            ' success rate candidates; currentEjectionPercent=' +
+            this.getCurrentEjectionPercent() +
+            ' successRates=[' +
+            successRates +
+            ']');
         if (addresesWithTargetVolume < successRateConfig.minimum_hosts) {
             return;
         }
         // Step 2
-        const successRateMean = successRates.reduce((a, b) => a + b);
-        let successRateVariance = 0;
+        const successRateMean = successRates.reduce((a, b) => a + b) / successRates.length;
+        let successRateDeviationSum = 0;
         for (const rate of successRates) {
             const deviation = rate - successRateMean;
-            successRateVariance += deviation * deviation;
+            successRateDeviationSum += deviation * deviation;
         }
+        const successRateVariance = successRateDeviationSum / successRates.length;
         const successRateStdev = Math.sqrt(successRateVariance);
-        const ejectionThreshold = successRateMean - successRateStdev * (successRateConfig.stdev_factor / 1000);
+        const ejectionThreshold = successRateMean -
+            successRateStdev * (successRateConfig.stdev_factor / 1000);
+        trace('stdev=' + successRateStdev + ' ejectionThreshold=' + ejectionThreshold);
         // Step 3
-        for (const mapEntry of this.addressMap.values()) {
+        for (const [address, mapEntry] of this.addressMap.entries()) {
             // Step 3.i
-            if (this.getCurrentEjectionPercent() > this.latestConfig.getMaxEjectionPercent()) {
+            if (this.getCurrentEjectionPercent() >=
+                this.latestConfig.getMaxEjectionPercent()) {
                 break;
             }
             // Step 3.ii
@@ -7047,9 +6671,17 @@ class OutlierDetectionLoadBalancer {
             }
             // Step 3.iii
             const successRate = successes / (successes + failures);
+            trace('Checking candidate ' + address + ' successRate=' + successRate);
             if (successRate < ejectionThreshold) {
                 const randomNumber = Math.random() * 100;
+                trace('Candidate ' +
+                    address +
+                    ' randomNumber=' +
+                    randomNumber +
+                    ' enforcement_percentage=' +
+                    successRateConfig.enforcement_percentage);
                 if (randomNumber < successRateConfig.enforcement_percentage) {
+                    trace('Ejecting candidate ' + address);
                     this.eject(mapEntry, ejectionTimestamp);
                 }
             }
@@ -7063,19 +6695,33 @@ class OutlierDetectionLoadBalancer {
         if (!failurePercentageConfig) {
             return;
         }
+        trace('Running failure percentage check. threshold=' +
+            failurePercentageConfig.threshold +
+            ' request volume threshold=' +
+            failurePercentageConfig.request_volume);
         // Step 1
-        if (this.addressMap.size < failurePercentageConfig.minimum_hosts) {
+        let addressesWithTargetVolume = 0;
+        for (const mapEntry of this.addressMap.values()) {
+            const successes = mapEntry.counter.getLastSuccesses();
+            const failures = mapEntry.counter.getLastFailures();
+            if (successes + failures >= failurePercentageConfig.request_volume) {
+                addressesWithTargetVolume += 1;
+            }
+        }
+        if (addressesWithTargetVolume < failurePercentageConfig.minimum_hosts) {
             return;
         }
         // Step 2
-        for (const mapEntry of this.addressMap.values()) {
+        for (const [address, mapEntry] of this.addressMap.entries()) {
             // Step 2.i
-            if (this.getCurrentEjectionPercent() > this.latestConfig.getMaxEjectionPercent()) {
+            if (this.getCurrentEjectionPercent() >=
+                this.latestConfig.getMaxEjectionPercent()) {
                 break;
             }
             // Step 2.ii
             const successes = mapEntry.counter.getLastSuccesses();
             const failures = mapEntry.counter.getLastFailures();
+            trace('Candidate successes=' + successes + ' failures=' + failures);
             if (successes + failures < failurePercentageConfig.request_volume) {
                 continue;
             }
@@ -7083,7 +6729,14 @@ class OutlierDetectionLoadBalancer {
             const failurePercentage = (failures * 100) / (failures + successes);
             if (failurePercentage > failurePercentageConfig.threshold) {
                 const randomNumber = Math.random() * 100;
+                trace('Candidate ' +
+                    address +
+                    ' randomNumber=' +
+                    randomNumber +
+                    ' enforcement_percentage=' +
+                    failurePercentageConfig.enforcement_percentage);
                 if (randomNumber < failurePercentageConfig.enforcement_percentage) {
+                    trace('Ejecting candidate ' + address);
                     this.eject(mapEntry, ejectionTimestamp);
                 }
             }
@@ -7102,17 +6755,28 @@ class OutlierDetectionLoadBalancer {
             subchannelWrapper.uneject();
         }
     }
-    runChecks() {
-        const ejectionTimestamp = new Date();
+    switchAllBuckets() {
         for (const mapEntry of this.addressMap.values()) {
             mapEntry.counter.switchBuckets();
         }
+    }
+    startTimer(delayMs) {
+        var _a, _b;
+        this.ejectionTimer = setTimeout(() => this.runChecks(), delayMs);
+        (_b = (_a = this.ejectionTimer).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+    }
+    runChecks() {
+        const ejectionTimestamp = new Date();
+        trace('Ejection timer running');
+        this.switchAllBuckets();
         if (!this.latestConfig) {
             return;
         }
+        this.timerStartTime = ejectionTimestamp;
+        this.startTimer(this.latestConfig.getIntervalMs());
         this.runSuccessRateCheck(ejectionTimestamp);
         this.runFailurePercentageCheck(ejectionTimestamp);
-        for (const mapEntry of this.addressMap.values()) {
+        for (const [address, mapEntry] of this.addressMap.entries()) {
             if (mapEntry.currentEjectionTimestamp === null) {
                 if (mapEntry.ejectionTimeMultiplier > 0) {
                     mapEntry.ejectionTimeMultiplier -= 1;
@@ -7122,8 +6786,10 @@ class OutlierDetectionLoadBalancer {
                 const baseEjectionTimeMs = this.latestConfig.getBaseEjectionTimeMs();
                 const maxEjectionTimeMs = this.latestConfig.getMaxEjectionTimeMs();
                 const returnTime = new Date(mapEntry.currentEjectionTimestamp.getTime());
-                returnTime.setMilliseconds(returnTime.getMilliseconds() + Math.min(baseEjectionTimeMs * mapEntry.ejectionTimeMultiplier, Math.max(baseEjectionTimeMs, maxEjectionTimeMs)));
+                returnTime.setMilliseconds(returnTime.getMilliseconds() +
+                    Math.min(baseEjectionTimeMs * mapEntry.ejectionTimeMultiplier, Math.max(baseEjectionTimeMs, maxEjectionTimeMs)));
                 if (returnTime < new Date()) {
+                    trace('Unejecting ' + address);
                     this.uneject(mapEntry);
                 }
             }
@@ -7135,28 +6801,51 @@ class OutlierDetectionLoadBalancer {
         }
         const subchannelAddresses = new Set();
         for (const address of addressList) {
-            subchannelAddresses.add(subchannel_address_1.subchannelAddressToString(address));
+            subchannelAddresses.add((0, subchannel_address_1.subchannelAddressToString)(address));
         }
         for (const address of subchannelAddresses) {
             if (!this.addressMap.has(address)) {
+                trace('Adding map entry for ' + address);
                 this.addressMap.set(address, {
                     counter: new CallCounter(),
                     currentEjectionTimestamp: null,
                     ejectionTimeMultiplier: 0,
-                    subchannelWrappers: []
+                    subchannelWrappers: [],
                 });
             }
         }
         for (const key of this.addressMap.keys()) {
             if (!subchannelAddresses.has(key)) {
+                trace('Removing map entry for ' + key);
                 this.addressMap.delete(key);
             }
         }
-        const childPolicy = load_balancer_1.getFirstUsableConfig(lbConfig.getChildPolicy(), true);
+        const childPolicy = (0, load_balancer_1.getFirstUsableConfig)(lbConfig.getChildPolicy(), true);
         this.childBalancer.updateAddressList(addressList, childPolicy, attributes);
-        if (this.latestConfig === null || this.latestConfig.getIntervalMs() !== lbConfig.getIntervalMs()) {
-            clearInterval(this.ejectionTimer);
-            this.ejectionTimer = setInterval(() => this.runChecks(), lbConfig.getIntervalMs());
+        if (lbConfig.getSuccessRateEjectionConfig() ||
+            lbConfig.getFailurePercentageEjectionConfig()) {
+            if (this.timerStartTime) {
+                trace('Previous timer existed. Replacing timer');
+                clearTimeout(this.ejectionTimer);
+                const remainingDelay = lbConfig.getIntervalMs() -
+                    (new Date().getTime() - this.timerStartTime.getTime());
+                this.startTimer(remainingDelay);
+            }
+            else {
+                trace('Starting new timer');
+                this.timerStartTime = new Date();
+                this.startTimer(lbConfig.getIntervalMs());
+                this.switchAllBuckets();
+            }
+        }
+        else {
+            trace('Counting disabled. Cancelling timer.');
+            this.timerStartTime = null;
+            clearTimeout(this.ejectionTimer);
+            for (const mapEntry of this.addressMap.values()) {
+                this.uneject(mapEntry);
+                mapEntry.ejectionTimeMultiplier = 0;
+            }
         }
         this.latestConfig = lbConfig;
     }
@@ -7167,6 +6856,7 @@ class OutlierDetectionLoadBalancer {
         this.childBalancer.resetBackoff();
     }
     destroy() {
+        clearTimeout(this.ejectionTimer);
         this.childBalancer.destroy();
     }
     getTypeName() {
@@ -7176,7 +6866,7 @@ class OutlierDetectionLoadBalancer {
 exports.OutlierDetectionLoadBalancer = OutlierDetectionLoadBalancer;
 function setup() {
     if (OUTLIER_DETECTION_ENABLED) {
-        experimental_1.registerLoadBalancerType(TYPE_NAME, OutlierDetectionLoadBalancer, OutlierDetectionLoadBalancingConfig);
+        (0, experimental_1.registerLoadBalancerType)(TYPE_NAME, OutlierDetectionLoadBalancer, OutlierDetectionLoadBalancingConfig);
     }
 }
 exports.setup = setup;
@@ -7206,11 +6896,10 @@ exports.setup = setup;
  *
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.setup = exports.PickFirstLoadBalancer = exports.PickFirstLoadBalancingConfig = void 0;
+exports.setup = exports.PickFirstLoadBalancer = exports.shuffled = exports.PickFirstLoadBalancingConfig = void 0;
 const load_balancer_1 = __nccwpck_require__(2680);
 const connectivity_state_1 = __nccwpck_require__(878);
 const picker_1 = __nccwpck_require__(1611);
-const subchannel_address_1 = __nccwpck_require__(9905);
 const logging = __nccwpck_require__(5993);
 const constants_1 = __nccwpck_require__(634);
 const TRACER_NAME = 'pick_first';
@@ -7224,18 +6913,29 @@ const TYPE_NAME = 'pick_first';
  */
 const CONNECTION_DELAY_INTERVAL_MS = 250;
 class PickFirstLoadBalancingConfig {
+    constructor(shuffleAddressList) {
+        this.shuffleAddressList = shuffleAddressList;
+    }
     getLoadBalancerName() {
         return TYPE_NAME;
     }
-    constructor() { }
     toJsonObject() {
         return {
-            [TYPE_NAME]: {},
+            [TYPE_NAME]: {
+                shuffleAddressList: this.shuffleAddressList,
+            },
         };
+    }
+    getShuffleAddressList() {
+        return this.shuffleAddressList;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     static createFromJson(obj) {
-        return new PickFirstLoadBalancingConfig();
+        if ('shuffleAddressList' in obj &&
+            !(typeof obj.shuffleAddressList === 'boolean')) {
+            throw new Error('pick_first config field shuffleAddressList must be a boolean if provided');
+        }
+        return new PickFirstLoadBalancingConfig(obj.shuffleAddressList === true);
     }
 }
 exports.PickFirstLoadBalancingConfig = PickFirstLoadBalancingConfig;
@@ -7252,11 +6952,27 @@ class PickFirstPicker {
             pickResultType: picker_1.PickResultType.COMPLETE,
             subchannel: this.subchannel,
             status: null,
-            extraFilterFactories: [],
             onCallStarted: null,
+            onCallEnded: null,
         };
     }
 }
+/**
+ * Return a new array with the elements of the input array in a random order
+ * @param list The input array
+ * @returns A shuffled array of the elements of list
+ */
+function shuffled(list) {
+    const result = list.slice();
+    for (let i = result.length - 1; i > 1; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const temp = result[i];
+        result[i] = result[j];
+        result[j] = temp;
+    }
+    return result;
+}
+exports.shuffled = shuffled;
 class PickFirstLoadBalancer {
     /**
      * Load balancer that attempts to connect to each backend in the address list
@@ -7268,14 +6984,10 @@ class PickFirstLoadBalancer {
     constructor(channelControlHelper) {
         this.channelControlHelper = channelControlHelper;
         /**
-         * The list of backend addresses most recently passed to `updateAddressList`.
-         */
-        this.latestAddressList = [];
-        /**
          * The list of subchannels this load balancer is currently attempting to
          * connect to.
          */
-        this.subchannels = [];
+        this.children = [];
         /**
          * The current connectivity state of the load balancer.
          */
@@ -7291,117 +7003,104 @@ class PickFirstLoadBalancer {
          * the subchannel's current state is also READY.
          */
         this.currentPick = null;
-        this.triedAllSubchannels = false;
-        this.subchannelStateCounts = {
-            [connectivity_state_1.ConnectivityState.CONNECTING]: 0,
-            [connectivity_state_1.ConnectivityState.IDLE]: 0,
-            [connectivity_state_1.ConnectivityState.READY]: 0,
-            [connectivity_state_1.ConnectivityState.SHUTDOWN]: 0,
-            [connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE]: 0,
-        };
+        /**
+         * Listener callback attached to each subchannel in the `subchannels` list
+         * while establishing a connection.
+         */
         this.subchannelStateListener = (subchannel, previousState, newState) => {
-            this.subchannelStateCounts[previousState] -= 1;
-            this.subchannelStateCounts[newState] += 1;
-            /* If the subchannel we most recently attempted to start connecting
-             * to goes into TRANSIENT_FAILURE, immediately try to start
-             * connecting to the next one instead of waiting for the connection
-             * delay timer. */
-            if (subchannel === this.subchannels[this.currentSubchannelIndex] &&
-                newState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
-                this.startNextSubchannelConnecting();
-            }
-            if (newState === connectivity_state_1.ConnectivityState.READY) {
-                this.pickSubchannel(subchannel);
-                return;
-            }
-            else {
-                if (this.triedAllSubchannels &&
-                    this.subchannelStateCounts[connectivity_state_1.ConnectivityState.IDLE] ===
-                        this.subchannels.length) {
-                    /* If all of the subchannels are IDLE we should go back to a
-                     * basic IDLE state where there is no subchannel list to avoid
-                     * holding unused resources */
-                    this.resetSubchannelList();
-                    this.updateState(connectivity_state_1.ConnectivityState.IDLE, new picker_1.QueuePicker(this));
-                    return;
-                }
-                if (this.currentPick === null) {
-                    if (this.triedAllSubchannels) {
-                        let newLBState;
-                        if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.CONNECTING] > 0) {
-                            newLBState = connectivity_state_1.ConnectivityState.CONNECTING;
-                        }
-                        else if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE] >
-                            0) {
-                            newLBState = connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE;
-                        }
-                        else {
-                            newLBState = connectivity_state_1.ConnectivityState.IDLE;
-                        }
-                        if (newLBState !== this.currentState) {
-                            if (newLBState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
-                                this.updateState(newLBState, new picker_1.UnavailablePicker());
-                            }
-                            else {
-                                this.updateState(newLBState, new picker_1.QueuePicker(this));
-                            }
-                        }
-                    }
-                    else {
-                        this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
-                    }
-                }
-            }
+            this.onSubchannelStateUpdate(subchannel, previousState, newState);
         };
-        this.pickedSubchannelStateListener = (subchannel, previousState, newState) => {
-            if (newState !== connectivity_state_1.ConnectivityState.READY) {
-                this.currentPick = null;
-                subchannel.unref();
-                subchannel.removeConnectivityStateListener(this.pickedSubchannelStateListener);
-                this.channelControlHelper.removeChannelzChild(subchannel.getChannelzRef());
-                if (this.subchannels.length > 0) {
-                    if (this.triedAllSubchannels) {
-                        let newLBState;
-                        if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.CONNECTING] > 0) {
-                            newLBState = connectivity_state_1.ConnectivityState.CONNECTING;
-                        }
-                        else if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE] >
-                            0) {
-                            newLBState = connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE;
-                        }
-                        else {
-                            newLBState = connectivity_state_1.ConnectivityState.IDLE;
-                        }
-                        if (newLBState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
-                            this.updateState(newLBState, new picker_1.UnavailablePicker());
-                        }
-                        else {
-                            this.updateState(newLBState, new picker_1.QueuePicker(this));
-                        }
-                    }
-                    else {
-                        this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
-                    }
-                }
-                else {
-                    /* We don't need to backoff here because this only happens if a
-                     * subchannel successfully connects then disconnects, so it will not
-                     * create a loop of attempting to connect to an unreachable backend
-                     */
-                    this.updateState(connectivity_state_1.ConnectivityState.IDLE, new picker_1.QueuePicker(this));
-                }
-            }
-        };
+        this.triedAllSubchannels = false;
+        /**
+         * The LB policy enters sticky TRANSIENT_FAILURE mode when all
+         * subchannels have failed to connect at least once, and it stays in that
+         * mode until a connection attempt is successful. While in sticky TF mode,
+         * the LB policy continuously attempts to connect to all of its subchannels.
+         */
+        this.stickyTransientFailureMode = false;
         this.connectionDelayTimeout = setTimeout(() => { }, 0);
         clearTimeout(this.connectionDelayTimeout);
     }
-    startNextSubchannelConnecting() {
-        if (this.triedAllSubchannels) {
+    allChildrenHaveReportedTF() {
+        return this.children.every(child => child.hasReportedTransientFailure);
+    }
+    calculateAndReportNewState() {
+        if (this.currentPick) {
+            this.updateState(connectivity_state_1.ConnectivityState.READY, new PickFirstPicker(this.currentPick));
+        }
+        else if (this.children.length === 0) {
+            this.updateState(connectivity_state_1.ConnectivityState.IDLE, new picker_1.QueuePicker(this));
+        }
+        else {
+            if (this.stickyTransientFailureMode) {
+                this.updateState(connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, new picker_1.UnavailablePicker());
+            }
+            else {
+                this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
+            }
+        }
+    }
+    maybeEnterStickyTransientFailureMode() {
+        if (this.stickyTransientFailureMode) {
             return;
         }
-        for (const [index, subchannel] of this.subchannels.entries()) {
-            if (index > this.currentSubchannelIndex) {
-                const subchannelState = subchannel.getConnectivityState();
+        if (!this.allChildrenHaveReportedTF()) {
+            return;
+        }
+        this.stickyTransientFailureMode = true;
+        this.channelControlHelper.requestReresolution();
+        for (const { subchannel } of this.children) {
+            subchannel.startConnecting();
+        }
+        this.calculateAndReportNewState();
+    }
+    removeCurrentPick() {
+        if (this.currentPick !== null) {
+            /* Unref can cause a state change, which can cause a change in the value
+             * of this.currentPick, so we hold a local reference to make sure that
+             * does not impact this function. */
+            const currentPick = this.currentPick;
+            this.currentPick = null;
+            currentPick.unref();
+            currentPick.removeConnectivityStateListener(this.subchannelStateListener);
+            this.channelControlHelper.removeChannelzChild(currentPick.getChannelzRef());
+        }
+    }
+    onSubchannelStateUpdate(subchannel, previousState, newState) {
+        var _a;
+        if ((_a = this.currentPick) === null || _a === void 0 ? void 0 : _a.realSubchannelEquals(subchannel)) {
+            if (newState !== connectivity_state_1.ConnectivityState.READY) {
+                this.removeCurrentPick();
+                this.calculateAndReportNewState();
+                this.channelControlHelper.requestReresolution();
+            }
+            return;
+        }
+        for (const [index, child] of this.children.entries()) {
+            if (subchannel.realSubchannelEquals(child.subchannel)) {
+                if (newState === connectivity_state_1.ConnectivityState.READY) {
+                    this.pickSubchannel(child.subchannel);
+                }
+                if (newState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
+                    child.hasReportedTransientFailure = true;
+                    this.maybeEnterStickyTransientFailureMode();
+                    if (index === this.currentSubchannelIndex) {
+                        this.startNextSubchannelConnecting(index + 1);
+                    }
+                }
+                child.subchannel.startConnecting();
+                return;
+            }
+        }
+    }
+    startNextSubchannelConnecting(startIndex) {
+        clearTimeout(this.connectionDelayTimeout);
+        if (this.triedAllSubchannels || this.stickyTransientFailureMode) {
+            return;
+        }
+        for (const [index, child] of this.children.entries()) {
+            if (index >= startIndex) {
+                const subchannelState = child.subchannel.getConnectivityState();
                 if (subchannelState === connectivity_state_1.ConnectivityState.IDLE ||
                     subchannelState === connectivity_state_1.ConnectivityState.CONNECTING) {
                     this.startConnecting(index);
@@ -7410,39 +7109,45 @@ class PickFirstLoadBalancer {
             }
         }
         this.triedAllSubchannels = true;
+        this.maybeEnterStickyTransientFailureMode();
     }
     /**
      * Have a single subchannel in the `subchannels` list start connecting.
      * @param subchannelIndex The index into the `subchannels` list.
      */
     startConnecting(subchannelIndex) {
+        var _a, _b;
         clearTimeout(this.connectionDelayTimeout);
         this.currentSubchannelIndex = subchannelIndex;
-        if (this.subchannels[subchannelIndex].getConnectivityState() ===
+        if (this.children[subchannelIndex].subchannel.getConnectivityState() ===
             connectivity_state_1.ConnectivityState.IDLE) {
             trace('Start connecting to subchannel with address ' +
-                this.subchannels[subchannelIndex].getAddress());
+                this.children[subchannelIndex].subchannel.getAddress());
             process.nextTick(() => {
-                this.subchannels[subchannelIndex].startConnecting();
+                this.children[subchannelIndex].subchannel.startConnecting();
             });
         }
-        this.connectionDelayTimeout = setTimeout(() => {
-            this.startNextSubchannelConnecting();
-        }, CONNECTION_DELAY_INTERVAL_MS);
+        this.connectionDelayTimeout = (_b = (_a = setTimeout(() => {
+            this.startNextSubchannelConnecting(subchannelIndex + 1);
+        }, CONNECTION_DELAY_INTERVAL_MS)).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
     }
     pickSubchannel(subchannel) {
+        if (subchannel === this.currentPick) {
+            return;
+        }
         trace('Pick subchannel with address ' + subchannel.getAddress());
+        this.stickyTransientFailureMode = false;
         if (this.currentPick !== null) {
             this.currentPick.unref();
-            this.currentPick.removeConnectivityStateListener(this.pickedSubchannelStateListener);
+            this.channelControlHelper.removeChannelzChild(this.currentPick.getChannelzRef());
+            this.currentPick.removeConnectivityStateListener(this.subchannelStateListener);
         }
         this.currentPick = subchannel;
-        this.updateState(connectivity_state_1.ConnectivityState.READY, new PickFirstPicker(subchannel));
-        subchannel.addConnectivityStateListener(this.pickedSubchannelStateListener);
         subchannel.ref();
         this.channelControlHelper.addChannelzChild(subchannel.getChannelzRef());
         this.resetSubchannelList();
         clearTimeout(this.connectionDelayTimeout);
+        this.calculateAndReportNewState();
     }
     updateState(newState, picker) {
         trace(connectivity_state_1.ConnectivityState[this.currentState] +
@@ -7452,84 +7157,68 @@ class PickFirstLoadBalancer {
         this.channelControlHelper.updateState(newState, picker);
     }
     resetSubchannelList() {
-        for (const subchannel of this.subchannels) {
-            subchannel.removeConnectivityStateListener(this.subchannelStateListener);
-            subchannel.unref();
-            this.channelControlHelper.removeChannelzChild(subchannel.getChannelzRef());
+        for (const child of this.children) {
+            if (child.subchannel !== this.currentPick) {
+                /* The connectivity state listener is the same whether the subchannel
+                 * is in the list of children or it is the currentPick, so if it is in
+                 * both, removing it here would cause problems. In particular, that
+                 * always happens immediately after the subchannel is picked. */
+                child.subchannel.removeConnectivityStateListener(this.subchannelStateListener);
+            }
+            /* Refs are counted independently for the children list and the
+             * currentPick, so we call unref whether or not the child is the
+             * currentPick. Channelz child references are also refcounted, so
+             * removeChannelzChild can be handled the same way. */
+            child.subchannel.unref();
+            this.channelControlHelper.removeChannelzChild(child.subchannel.getChannelzRef());
         }
         this.currentSubchannelIndex = 0;
-        this.subchannelStateCounts = {
-            [connectivity_state_1.ConnectivityState.CONNECTING]: 0,
-            [connectivity_state_1.ConnectivityState.IDLE]: 0,
-            [connectivity_state_1.ConnectivityState.READY]: 0,
-            [connectivity_state_1.ConnectivityState.SHUTDOWN]: 0,
-            [connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE]: 0,
-        };
-        this.subchannels = [];
+        this.children = [];
         this.triedAllSubchannels = false;
     }
-    /**
-     * Start connecting to the address list most recently passed to
-     * `updateAddressList`.
-     */
-    connectToAddressList() {
-        this.resetSubchannelList();
-        trace('Connect to address list ' +
-            this.latestAddressList.map((address) => subchannel_address_1.subchannelAddressToString(address)));
-        this.subchannels = this.latestAddressList.map((address) => this.channelControlHelper.createSubchannel(address, {}));
-        for (const subchannel of this.subchannels) {
+    updateAddressList(addressList, lbConfig) {
+        if (!(lbConfig instanceof PickFirstLoadBalancingConfig)) {
+            return;
+        }
+        /* Previously, an update would be discarded if it was identical to the
+         * previous update, to minimize churn. Now the DNS resolver is
+         * rate-limited, so that is less of a concern. */
+        if (lbConfig.getShuffleAddressList()) {
+            addressList = shuffled(addressList);
+        }
+        const newChildrenList = addressList.map(address => ({
+            subchannel: this.channelControlHelper.createSubchannel(address, {}),
+            hasReportedTransientFailure: false,
+        }));
+        /* Ref each subchannel before resetting the list, to ensure that
+         * subchannels shared between the list don't drop to 0 refs during the
+         * transition. */
+        for (const { subchannel } of newChildrenList) {
             subchannel.ref();
             this.channelControlHelper.addChannelzChild(subchannel.getChannelzRef());
         }
-        for (const subchannel of this.subchannels) {
+        this.resetSubchannelList();
+        this.children = newChildrenList;
+        for (const { subchannel } of this.children) {
             subchannel.addConnectivityStateListener(this.subchannelStateListener);
-            this.subchannelStateCounts[subchannel.getConnectivityState()] += 1;
             if (subchannel.getConnectivityState() === connectivity_state_1.ConnectivityState.READY) {
                 this.pickSubchannel(subchannel);
-                this.resetSubchannelList();
                 return;
             }
         }
-        for (const [index, subchannel] of this.subchannels.entries()) {
-            const subchannelState = subchannel.getConnectivityState();
-            if (subchannelState === connectivity_state_1.ConnectivityState.IDLE ||
-                subchannelState === connectivity_state_1.ConnectivityState.CONNECTING) {
-                this.startConnecting(index);
-                if (this.currentPick === null) {
-                    this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
-                }
-                return;
+        for (const child of this.children) {
+            if (child.subchannel.getConnectivityState() ===
+                connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
+                child.hasReportedTransientFailure = true;
             }
         }
-        // If the code reaches this point, every subchannel must be in TRANSIENT_FAILURE
-        if (this.currentPick === null) {
-            this.updateState(connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, new picker_1.UnavailablePicker());
-        }
-    }
-    updateAddressList(addressList, lbConfig) {
-        // lbConfig has no useful information for pick first load balancing
-        /* To avoid unnecessary churn, we only do something with this address list
-         * if we're not currently trying to establish a connection, or if the new
-         * address list is different from the existing one */
-        if (this.subchannels.length === 0 ||
-            !this.latestAddressList.every((value, index) => addressList[index] === value)) {
-            this.latestAddressList = addressList;
-            this.connectToAddressList();
-        }
+        this.startNextSubchannelConnecting(0);
+        this.calculateAndReportNewState();
     }
     exitIdle() {
-        for (const subchannel of this.subchannels) {
-            subchannel.startConnecting();
-        }
-        if (this.currentState === connectivity_state_1.ConnectivityState.IDLE) {
-            if (this.latestAddressList.length > 0) {
-                this.connectToAddressList();
-            }
-        }
-        if (this.currentState === connectivity_state_1.ConnectivityState.IDLE ||
-            this.triedAllSubchannels) {
-            this.channelControlHelper.requestReresolution();
-        }
+        /* The pick_first LB policy is only in the IDLE state if it has no
+         * addresses to try to connect to and it has no picked subchannel.
+         * In that case, there is no meaningful action that can be taken here. */
     }
     resetBackoff() {
         /* The pick first load balancer does not have a connection backoff, so this
@@ -7537,15 +7226,7 @@ class PickFirstLoadBalancer {
     }
     destroy() {
         this.resetSubchannelList();
-        if (this.currentPick !== null) {
-            /* Unref can cause a state change, which can cause a change in the value
-             * of this.currentPick, so we hold a local reference to make sure that
-             * does not impact this function. */
-            const currentPick = this.currentPick;
-            currentPick.unref();
-            currentPick.removeConnectivityStateListener(this.pickedSubchannelStateListener);
-            this.channelControlHelper.removeChannelzChild(currentPick.getChannelzRef());
-        }
+        this.removeCurrentPick();
     }
     getTypeName() {
         return TYPE_NAME;
@@ -7553,8 +7234,8 @@ class PickFirstLoadBalancer {
 }
 exports.PickFirstLoadBalancer = PickFirstLoadBalancer;
 function setup() {
-    load_balancer_1.registerLoadBalancerType(TYPE_NAME, PickFirstLoadBalancer, PickFirstLoadBalancingConfig);
-    load_balancer_1.registerDefaultLoadBalancerType(TYPE_NAME);
+    (0, load_balancer_1.registerLoadBalancerType)(TYPE_NAME, PickFirstLoadBalancer, PickFirstLoadBalancingConfig);
+    (0, load_balancer_1.registerDefaultLoadBalancerType)(TYPE_NAME);
 }
 exports.setup = setup;
 //# sourceMappingURL=load-balancer-pick-first.js.map
@@ -7622,8 +7303,8 @@ class RoundRobinPicker {
             pickResultType: picker_1.PickResultType.COMPLETE,
             subchannel: pickedSubchannel,
             status: null,
-            extraFilterFactories: [],
             onCallStarted: null,
+            onCallEnded: null,
         };
     }
     /**
@@ -7641,16 +7322,7 @@ class RoundRobinLoadBalancer {
         this.subchannels = [];
         this.currentState = connectivity_state_1.ConnectivityState.IDLE;
         this.currentReadyPicker = null;
-        this.subchannelStateCounts = {
-            [connectivity_state_1.ConnectivityState.CONNECTING]: 0,
-            [connectivity_state_1.ConnectivityState.IDLE]: 0,
-            [connectivity_state_1.ConnectivityState.READY]: 0,
-            [connectivity_state_1.ConnectivityState.SHUTDOWN]: 0,
-            [connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE]: 0,
-        };
         this.subchannelStateListener = (subchannel, previousState, newState) => {
-            this.subchannelStateCounts[previousState] -= 1;
-            this.subchannelStateCounts[newState] += 1;
             this.calculateAndUpdateState();
             if (newState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE ||
                 newState === connectivity_state_1.ConnectivityState.IDLE) {
@@ -7659,9 +7331,12 @@ class RoundRobinLoadBalancer {
             }
         };
     }
+    countSubchannelsWithState(state) {
+        return this.subchannels.filter(subchannel => subchannel.getConnectivityState() === state).length;
+    }
     calculateAndUpdateState() {
-        if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.READY] > 0) {
-            const readySubchannels = this.subchannels.filter((subchannel) => subchannel.getConnectivityState() === connectivity_state_1.ConnectivityState.READY);
+        if (this.countSubchannelsWithState(connectivity_state_1.ConnectivityState.READY) > 0) {
+            const readySubchannels = this.subchannels.filter(subchannel => subchannel.getConnectivityState() === connectivity_state_1.ConnectivityState.READY);
             let index = 0;
             if (this.currentReadyPicker !== null) {
                 index = readySubchannels.indexOf(this.currentReadyPicker.peekNextSubchannel());
@@ -7671,10 +7346,10 @@ class RoundRobinLoadBalancer {
             }
             this.updateState(connectivity_state_1.ConnectivityState.READY, new RoundRobinPicker(readySubchannels, index));
         }
-        else if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.CONNECTING] > 0) {
+        else if (this.countSubchannelsWithState(connectivity_state_1.ConnectivityState.CONNECTING) > 0) {
             this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
         }
-        else if (this.subchannelStateCounts[connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE] > 0) {
+        else if (this.countSubchannelsWithState(connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) > 0) {
             this.updateState(connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, new picker_1.UnavailablePicker());
         }
         else {
@@ -7700,26 +7375,18 @@ class RoundRobinLoadBalancer {
             subchannel.unref();
             this.channelControlHelper.removeChannelzChild(subchannel.getChannelzRef());
         }
-        this.subchannelStateCounts = {
-            [connectivity_state_1.ConnectivityState.CONNECTING]: 0,
-            [connectivity_state_1.ConnectivityState.IDLE]: 0,
-            [connectivity_state_1.ConnectivityState.READY]: 0,
-            [connectivity_state_1.ConnectivityState.SHUTDOWN]: 0,
-            [connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE]: 0,
-        };
         this.subchannels = [];
     }
     updateAddressList(addressList, lbConfig) {
         this.resetSubchannelList();
         trace('Connect to address list ' +
-            addressList.map((address) => subchannel_address_1.subchannelAddressToString(address)));
-        this.subchannels = addressList.map((address) => this.channelControlHelper.createSubchannel(address, {}));
+            addressList.map(address => (0, subchannel_address_1.subchannelAddressToString)(address)));
+        this.subchannels = addressList.map(address => this.channelControlHelper.createSubchannel(address, {}));
         for (const subchannel of this.subchannels) {
             subchannel.ref();
             subchannel.addConnectivityStateListener(this.subchannelStateListener);
             this.channelControlHelper.addChannelzChild(subchannel.getChannelzRef());
             const subchannelState = subchannel.getConnectivityState();
-            this.subchannelStateCounts[subchannelState] += 1;
             if (subchannelState === connectivity_state_1.ConnectivityState.IDLE ||
                 subchannelState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
                 subchannel.startConnecting();
@@ -7745,7 +7412,7 @@ class RoundRobinLoadBalancer {
 }
 exports.RoundRobinLoadBalancer = RoundRobinLoadBalancer;
 function setup() {
-    load_balancer_1.registerLoadBalancerType(TYPE_NAME, RoundRobinLoadBalancer, RoundRobinLoadBalancingConfig);
+    (0, load_balancer_1.registerLoadBalancerType)(TYPE_NAME, RoundRobinLoadBalancer, RoundRobinLoadBalancingConfig);
 }
 exports.setup = setup;
 //# sourceMappingURL=load-balancer-round-robin.js.map
@@ -7790,7 +7457,7 @@ function createChildChannelControlHelper(parent, overrides) {
         updateState: (_d = (_c = overrides.updateState) === null || _c === void 0 ? void 0 : _c.bind(overrides)) !== null && _d !== void 0 ? _d : parent.updateState.bind(parent),
         requestReresolution: (_f = (_e = overrides.requestReresolution) === null || _e === void 0 ? void 0 : _e.bind(overrides)) !== null && _f !== void 0 ? _f : parent.requestReresolution.bind(parent),
         addChannelzChild: (_h = (_g = overrides.addChannelzChild) === null || _g === void 0 ? void 0 : _g.bind(overrides)) !== null && _h !== void 0 ? _h : parent.addChannelzChild.bind(parent),
-        removeChannelzChild: (_k = (_j = overrides.removeChannelzChild) === null || _j === void 0 ? void 0 : _j.bind(overrides)) !== null && _k !== void 0 ? _k : parent.removeChannelzChild.bind(parent)
+        removeChannelzChild: (_k = (_j = overrides.removeChannelzChild) === null || _j === void 0 ? void 0 : _j.bind(overrides)) !== null && _k !== void 0 ? _k : parent.removeChannelzChild.bind(parent),
     };
 }
 exports.createChildChannelControlHelper = createChildChannelControlHelper;
@@ -7862,6 +7529,275 @@ exports.validateLoadBalancingConfig = validateLoadBalancingConfig;
 
 /***/ }),
 
+/***/ 776:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2022 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LoadBalancingCall = void 0;
+const connectivity_state_1 = __nccwpck_require__(878);
+const constants_1 = __nccwpck_require__(634);
+const deadline_1 = __nccwpck_require__(511);
+const metadata_1 = __nccwpck_require__(3665);
+const picker_1 = __nccwpck_require__(1611);
+const uri_parser_1 = __nccwpck_require__(5974);
+const logging = __nccwpck_require__(5993);
+const control_plane_status_1 = __nccwpck_require__(9129);
+const http2 = __nccwpck_require__(5158);
+const TRACER_NAME = 'load_balancing_call';
+class LoadBalancingCall {
+    constructor(channel, callConfig, methodName, host, credentials, deadline, callNumber) {
+        var _a, _b;
+        this.channel = channel;
+        this.callConfig = callConfig;
+        this.methodName = methodName;
+        this.host = host;
+        this.credentials = credentials;
+        this.deadline = deadline;
+        this.callNumber = callNumber;
+        this.child = null;
+        this.readPending = false;
+        this.pendingMessage = null;
+        this.pendingHalfClose = false;
+        this.ended = false;
+        this.metadata = null;
+        this.listener = null;
+        this.onCallEnded = null;
+        const splitPath = this.methodName.split('/');
+        let serviceName = '';
+        /* The standard path format is "/{serviceName}/{methodName}", so if we split
+         * by '/', the first item should be empty and the second should be the
+         * service name */
+        if (splitPath.length >= 2) {
+            serviceName = splitPath[1];
+        }
+        const hostname = (_b = (_a = (0, uri_parser_1.splitHostPort)(this.host)) === null || _a === void 0 ? void 0 : _a.host) !== null && _b !== void 0 ? _b : 'localhost';
+        /* Currently, call credentials are only allowed on HTTPS connections, so we
+         * can assume that the scheme is "https" */
+        this.serviceUrl = `https://${hostname}/${serviceName}`;
+    }
+    trace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, '[' + this.callNumber + '] ' + text);
+    }
+    outputStatus(status, progress) {
+        var _a, _b;
+        if (!this.ended) {
+            this.ended = true;
+            this.trace('ended with status: code=' +
+                status.code +
+                ' details="' +
+                status.details +
+                '"');
+            const finalStatus = Object.assign(Object.assign({}, status), { progress });
+            (_a = this.listener) === null || _a === void 0 ? void 0 : _a.onReceiveStatus(finalStatus);
+            (_b = this.onCallEnded) === null || _b === void 0 ? void 0 : _b.call(this, finalStatus.code);
+        }
+    }
+    doPick() {
+        var _a, _b;
+        if (this.ended) {
+            return;
+        }
+        if (!this.metadata) {
+            throw new Error('doPick called before start');
+        }
+        this.trace('Pick called');
+        const pickResult = this.channel.doPick(this.metadata, this.callConfig.pickInformation);
+        const subchannelString = pickResult.subchannel
+            ? '(' +
+                pickResult.subchannel.getChannelzRef().id +
+                ') ' +
+                pickResult.subchannel.getAddress()
+            : '' + pickResult.subchannel;
+        this.trace('Pick result: ' +
+            picker_1.PickResultType[pickResult.pickResultType] +
+            ' subchannel: ' +
+            subchannelString +
+            ' status: ' +
+            ((_a = pickResult.status) === null || _a === void 0 ? void 0 : _a.code) +
+            ' ' +
+            ((_b = pickResult.status) === null || _b === void 0 ? void 0 : _b.details));
+        switch (pickResult.pickResultType) {
+            case picker_1.PickResultType.COMPLETE:
+                this.credentials
+                    .generateMetadata({ service_url: this.serviceUrl })
+                    .then(credsMetadata => {
+                    var _a, _b, _c;
+                    const finalMetadata = this.metadata.clone();
+                    finalMetadata.merge(credsMetadata);
+                    if (finalMetadata.get('authorization').length > 1) {
+                        this.outputStatus({
+                            code: constants_1.Status.INTERNAL,
+                            details: '"authorization" metadata cannot have multiple values',
+                            metadata: new metadata_1.Metadata(),
+                        }, 'PROCESSED');
+                    }
+                    if (pickResult.subchannel.getConnectivityState() !==
+                        connectivity_state_1.ConnectivityState.READY) {
+                        this.trace('Picked subchannel ' +
+                            subchannelString +
+                            ' has state ' +
+                            connectivity_state_1.ConnectivityState[pickResult.subchannel.getConnectivityState()] +
+                            ' after getting credentials metadata. Retrying pick');
+                        this.doPick();
+                        return;
+                    }
+                    if (this.deadline !== Infinity) {
+                        finalMetadata.set('grpc-timeout', (0, deadline_1.getDeadlineTimeoutString)(this.deadline));
+                    }
+                    try {
+                        this.child = pickResult
+                            .subchannel.getRealSubchannel()
+                            .createCall(finalMetadata, this.host, this.methodName, {
+                            onReceiveMetadata: metadata => {
+                                this.trace('Received metadata');
+                                this.listener.onReceiveMetadata(metadata);
+                            },
+                            onReceiveMessage: message => {
+                                this.trace('Received message');
+                                this.listener.onReceiveMessage(message);
+                            },
+                            onReceiveStatus: status => {
+                                this.trace('Received status');
+                                if (status.rstCode ===
+                                    http2.constants.NGHTTP2_REFUSED_STREAM) {
+                                    this.outputStatus(status, 'REFUSED');
+                                }
+                                else {
+                                    this.outputStatus(status, 'PROCESSED');
+                                }
+                            },
+                        });
+                    }
+                    catch (error) {
+                        this.trace('Failed to start call on picked subchannel ' +
+                            subchannelString +
+                            ' with error ' +
+                            error.message);
+                        this.outputStatus({
+                            code: constants_1.Status.INTERNAL,
+                            details: 'Failed to start HTTP/2 stream with error ' +
+                                error.message,
+                            metadata: new metadata_1.Metadata(),
+                        }, 'NOT_STARTED');
+                        return;
+                    }
+                    (_b = (_a = this.callConfig).onCommitted) === null || _b === void 0 ? void 0 : _b.call(_a);
+                    (_c = pickResult.onCallStarted) === null || _c === void 0 ? void 0 : _c.call(pickResult);
+                    this.onCallEnded = pickResult.onCallEnded;
+                    this.trace('Created child call [' + this.child.getCallNumber() + ']');
+                    if (this.readPending) {
+                        this.child.startRead();
+                    }
+                    if (this.pendingMessage) {
+                        this.child.sendMessageWithContext(this.pendingMessage.context, this.pendingMessage.message);
+                    }
+                    if (this.pendingHalfClose) {
+                        this.child.halfClose();
+                    }
+                }, (error) => {
+                    // We assume the error code isn't 0 (Status.OK)
+                    const { code, details } = (0, control_plane_status_1.restrictControlPlaneStatusCode)(typeof error.code === 'number' ? error.code : constants_1.Status.UNKNOWN, `Getting metadata from plugin failed with error: ${error.message}`);
+                    this.outputStatus({
+                        code: code,
+                        details: details,
+                        metadata: new metadata_1.Metadata(),
+                    }, 'PROCESSED');
+                });
+                break;
+            case picker_1.PickResultType.DROP:
+                const { code, details } = (0, control_plane_status_1.restrictControlPlaneStatusCode)(pickResult.status.code, pickResult.status.details);
+                setImmediate(() => {
+                    this.outputStatus({ code, details, metadata: pickResult.status.metadata }, 'DROP');
+                });
+                break;
+            case picker_1.PickResultType.TRANSIENT_FAILURE:
+                if (this.metadata.getOptions().waitForReady) {
+                    this.channel.queueCallForPick(this);
+                }
+                else {
+                    const { code, details } = (0, control_plane_status_1.restrictControlPlaneStatusCode)(pickResult.status.code, pickResult.status.details);
+                    setImmediate(() => {
+                        this.outputStatus({ code, details, metadata: pickResult.status.metadata }, 'PROCESSED');
+                    });
+                }
+                break;
+            case picker_1.PickResultType.QUEUE:
+                this.channel.queueCallForPick(this);
+        }
+    }
+    cancelWithStatus(status, details) {
+        var _a;
+        this.trace('cancelWithStatus code: ' + status + ' details: "' + details + '"');
+        (_a = this.child) === null || _a === void 0 ? void 0 : _a.cancelWithStatus(status, details);
+        this.outputStatus({ code: status, details: details, metadata: new metadata_1.Metadata() }, 'PROCESSED');
+    }
+    getPeer() {
+        var _a, _b;
+        return (_b = (_a = this.child) === null || _a === void 0 ? void 0 : _a.getPeer()) !== null && _b !== void 0 ? _b : this.channel.getTarget();
+    }
+    start(metadata, listener) {
+        this.trace('start called');
+        this.listener = listener;
+        this.metadata = metadata;
+        this.doPick();
+    }
+    sendMessageWithContext(context, message) {
+        this.trace('write() called with message of length ' + message.length);
+        if (this.child) {
+            this.child.sendMessageWithContext(context, message);
+        }
+        else {
+            this.pendingMessage = { context, message };
+        }
+    }
+    startRead() {
+        this.trace('startRead called');
+        if (this.child) {
+            this.child.startRead();
+        }
+        else {
+            this.readPending = true;
+        }
+    }
+    halfClose() {
+        this.trace('halfClose called');
+        if (this.child) {
+            this.child.halfClose();
+        }
+        else {
+            this.pendingHalfClose = true;
+        }
+    }
+    setCredentials(credentials) {
+        throw new Error('Method not implemented.');
+    }
+    getCallNumber() {
+        return this.callNumber;
+    }
+}
+exports.LoadBalancingCall = LoadBalancingCall;
+//# sourceMappingURL=load-balancing-call.js.map
+
+/***/ }),
+
 /***/ 5993:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -7917,17 +7853,20 @@ switch (verbosityString.toUpperCase()) {
     default:
     // Ignore any other values
 }
-exports.getLogger = () => {
+const getLogger = () => {
     return _logger;
 };
-exports.setLogger = (logger) => {
+exports.getLogger = getLogger;
+const setLogger = (logger) => {
     _logger = logger;
 };
-exports.setLoggerVerbosity = (verbosity) => {
+exports.setLogger = setLogger;
+const setLoggerVerbosity = (verbosity) => {
     _logVerbosity = verbosity;
 };
+exports.setLoggerVerbosity = setLoggerVerbosity;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-exports.log = (severity, ...args) => {
+const log = (severity, ...args) => {
     let logFunction;
     if (severity >= _logVerbosity) {
         switch (severity) {
@@ -7951,6 +7890,7 @@ exports.log = (severity, ...args) => {
         }
     }
 };
+exports.log = log;
 const tracersString = (_d = (_c = process.env.GRPC_NODE_TRACE) !== null && _c !== void 0 ? _c : process.env.GRPC_TRACE) !== null && _d !== void 0 ? _d : '';
 const enabledTracers = new Set();
 const disabledTracers = new Set();
@@ -7965,13 +7905,12 @@ for (const tracerName of tracersString.split(',')) {
 const allEnabled = enabledTracers.has('all');
 function trace(severity, tracer, text) {
     if (isTracerEnabled(tracer)) {
-        exports.log(severity, new Date().toISOString() + ' | ' + tracer + ' | ' + text);
+        (0, exports.log)(severity, new Date().toISOString() + ' | ' + tracer + ' | ' + text);
     }
 }
 exports.trace = trace;
 function isTracerEnabled(tracer) {
-    return !disabledTracers.has(tracer) &&
-        (allEnabled || enabledTracers.has(tracer));
+    return (!disabledTracers.has(tracer) && (allEnabled || enabledTracers.has(tracer)));
 }
 exports.isTracerEnabled = isTracerEnabled;
 //# sourceMappingURL=logging.js.map
@@ -8041,7 +7980,7 @@ function makeClientConstructor(methods, serviceName, classOptions) {
     }
     class ServiceClientImpl extends client_1.Client {
     }
-    Object.keys(methods).forEach((name) => {
+    Object.keys(methods).forEach(name => {
         if (isPrototypePolluted(name)) {
             return;
         }
@@ -8154,11 +8093,10 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.MaxMessageSizeFilterFactory = exports.MaxMessageSizeFilter = void 0;
 const filter_1 = __nccwpck_require__(3392);
 const constants_1 = __nccwpck_require__(634);
+const metadata_1 = __nccwpck_require__(3665);
 class MaxMessageSizeFilter extends filter_1.BaseFilter {
-    constructor(options, callStream) {
+    constructor(options) {
         super();
-        this.options = options;
-        this.callStream = callStream;
         this.maxSendMessageSize = constants_1.DEFAULT_MAX_SEND_MESSAGE_LENGTH;
         this.maxReceiveMessageSize = constants_1.DEFAULT_MAX_RECEIVE_MESSAGE_LENGTH;
         if ('grpc.max_send_message_length' in options) {
@@ -8177,8 +8115,11 @@ class MaxMessageSizeFilter extends filter_1.BaseFilter {
         else {
             const concreteMessage = await message;
             if (concreteMessage.message.length > this.maxSendMessageSize) {
-                this.callStream.cancelWithStatus(constants_1.Status.RESOURCE_EXHAUSTED, `Sent message larger than max (${concreteMessage.message.length} vs. ${this.maxSendMessageSize})`);
-                return Promise.reject('Message too large');
+                throw {
+                    code: constants_1.Status.RESOURCE_EXHAUSTED,
+                    details: `Sent message larger than max (${concreteMessage.message.length} vs. ${this.maxSendMessageSize})`,
+                    metadata: new metadata_1.Metadata(),
+                };
             }
             else {
                 return concreteMessage;
@@ -8194,8 +8135,11 @@ class MaxMessageSizeFilter extends filter_1.BaseFilter {
         else {
             const concreteMessage = await message;
             if (concreteMessage.length > this.maxReceiveMessageSize) {
-                this.callStream.cancelWithStatus(constants_1.Status.RESOURCE_EXHAUSTED, `Received message larger than max (${concreteMessage.length} vs. ${this.maxReceiveMessageSize})`);
-                return Promise.reject('Message too large');
+                throw {
+                    code: constants_1.Status.RESOURCE_EXHAUSTED,
+                    details: `Received message larger than max (${concreteMessage.length} vs. ${this.maxReceiveMessageSize})`,
+                    metadata: new metadata_1.Metadata(),
+                };
             }
             else {
                 return concreteMessage;
@@ -8208,8 +8152,8 @@ class MaxMessageSizeFilterFactory {
     constructor(options) {
         this.options = options;
     }
-    createFilter(callStream) {
-        return new MaxMessageSizeFilter(this.options, callStream);
+    createFilter() {
+        return new MaxMessageSizeFilter(this.options);
     }
 }
 exports.MaxMessageSizeFilterFactory = MaxMessageSizeFilterFactory;
@@ -8242,6 +8186,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Metadata = void 0;
 const logging_1 = __nccwpck_require__(5993);
 const constants_1 = __nccwpck_require__(634);
+const error_1 = __nccwpck_require__(2336);
 const LEGAL_KEY_REGEX = /^[0-9a-z_.-]+$/;
 const LEGAL_NON_BINARY_VALUE_REGEX = /^[ -~]*$/;
 function isLegalKey(key) {
@@ -8265,12 +8210,12 @@ function validate(key, value) {
     }
     if (value !== null && value !== undefined) {
         if (isBinaryKey(key)) {
-            if (!(value instanceof Buffer)) {
+            if (!Buffer.isBuffer(value)) {
                 throw new Error("keys that end with '-bin' must have Buffer values");
             }
         }
         else {
-            if (value instanceof Buffer) {
+            if (Buffer.isBuffer(value)) {
                 throw new Error("keys that don't end with '-bin' must have String values");
             }
             if (!isLegalNonBinaryValue(value)) {
@@ -8283,14 +8228,9 @@ function validate(key, value) {
  * A class for storing metadata. Keys are normalized to lowercase ASCII.
  */
 class Metadata {
-    constructor(options) {
+    constructor(options = {}) {
         this.internalRepr = new Map();
-        if (options === undefined) {
-            this.options = {};
-        }
-        else {
-            this.options = options;
-        }
+        this.options = options;
     }
     /**
      * Sets the given value for the given key by replacing any other values
@@ -8328,7 +8268,7 @@ class Metadata {
      */
     remove(key) {
         key = normalizeKey(key);
-        validate(key);
+        // validate(key);
         this.internalRepr.delete(key);
     }
     /**
@@ -8338,7 +8278,7 @@ class Metadata {
      */
     get(key) {
         key = normalizeKey(key);
-        validate(key);
+        // validate(key);
         return this.internalRepr.get(key) || [];
     }
     /**
@@ -8348,12 +8288,12 @@ class Metadata {
      */
     getMap() {
         const result = {};
-        this.internalRepr.forEach((values, key) => {
+        for (const [key, values] of this.internalRepr) {
             if (values.length > 0) {
                 const v = values[0];
-                result[key] = v instanceof Buffer ? v.slice() : v;
+                result[key] = Buffer.isBuffer(v) ? Buffer.from(v) : v;
             }
-        });
+        }
         return result;
     }
     /**
@@ -8363,9 +8303,9 @@ class Metadata {
     clone() {
         const newMetadata = new Metadata(this.options);
         const newInternalRepr = newMetadata.internalRepr;
-        this.internalRepr.forEach((value, key) => {
-            const clonedValue = value.map((v) => {
-                if (v instanceof Buffer) {
+        for (const [key, value] of this.internalRepr) {
+            const clonedValue = value.map(v => {
+                if (Buffer.isBuffer(v)) {
                     return Buffer.from(v);
                 }
                 else {
@@ -8373,7 +8313,7 @@ class Metadata {
                 }
             });
             newInternalRepr.set(key, clonedValue);
-        });
+        }
         return newMetadata;
     }
     /**
@@ -8384,10 +8324,10 @@ class Metadata {
      * @param other A Metadata object.
      */
     merge(other) {
-        other.internalRepr.forEach((values, key) => {
+        for (const [key, values] of other.internalRepr) {
             const mergedValue = (this.internalRepr.get(key) || []).concat(values);
             this.internalRepr.set(key, mergedValue);
-        });
+        }
     }
     setOptions(options) {
         this.options = options;
@@ -8401,23 +8341,12 @@ class Metadata {
     toHttp2Headers() {
         // NOTE: Node <8.9 formats http2 headers incorrectly.
         const result = {};
-        this.internalRepr.forEach((values, key) => {
+        for (const [key, values] of this.internalRepr) {
             // We assume that the user's interaction with this object is limited to
             // through its public API (i.e. keys and values are already validated).
-            result[key] = values.map((value) => {
-                if (value instanceof Buffer) {
-                    return value.toString('base64');
-                }
-                else {
-                    return value;
-                }
-            });
-        });
+            result[key] = values.map(bufToString);
+        }
         return result;
-    }
-    // For compatibility with the other Metadata implementation
-    _getCoreRepresentation() {
-        return this.internalRepr;
     }
     /**
      * This modifies the behavior of JSON.stringify to show an object
@@ -8425,7 +8354,7 @@ class Metadata {
      */
     toJSON() {
         const result = {};
-        for (const [key, values] of this.internalRepr.entries()) {
+        for (const [key, values] of this.internalRepr) {
             result[key] = values;
         }
         return result;
@@ -8437,22 +8366,22 @@ class Metadata {
      */
     static fromHttp2Headers(headers) {
         const result = new Metadata();
-        Object.keys(headers).forEach((key) => {
+        for (const key of Object.keys(headers)) {
             // Reserved headers (beginning with `:`) are not valid keys.
             if (key.charAt(0) === ':') {
-                return;
+                continue;
             }
             const values = headers[key];
             try {
                 if (isBinaryKey(key)) {
                     if (Array.isArray(values)) {
-                        values.forEach((value) => {
+                        values.forEach(value => {
                             result.add(key, Buffer.from(value, 'base64'));
                         });
                     }
                     else if (values !== undefined) {
                         if (isCustomMetadata(key)) {
-                            values.split(',').forEach((v) => {
+                            values.split(',').forEach(v => {
                                 result.add(key, Buffer.from(v.trim(), 'base64'));
                             });
                         }
@@ -8463,7 +8392,7 @@ class Metadata {
                 }
                 else {
                     if (Array.isArray(values)) {
-                        values.forEach((value) => {
+                        values.forEach(value => {
                             result.add(key, value);
                         });
                     }
@@ -8473,14 +8402,17 @@ class Metadata {
                 }
             }
             catch (error) {
-                const message = `Failed to add metadata entry ${key}: ${values}. ${error.message}. For more information see https://github.com/grpc/grpc-node/issues/1173`;
-                logging_1.log(constants_1.LogVerbosity.ERROR, message);
+                const message = `Failed to add metadata entry ${key}: ${values}. ${(0, error_1.getErrorMessage)(error)}. For more information see https://github.com/grpc/grpc-node/issues/1173`;
+                (0, logging_1.log)(constants_1.LogVerbosity.ERROR, message);
             }
-        });
+        }
         return result;
     }
 }
 exports.Metadata = Metadata;
+const bufToString = (val) => {
+    return Buffer.isBuffer(val) ? val.toString('base64') : val;
+};
 //# sourceMappingURL=metadata.js.map
 
 /***/ }),
@@ -8516,7 +8448,7 @@ var PickResultType;
     PickResultType[PickResultType["QUEUE"] = 1] = "QUEUE";
     PickResultType[PickResultType["TRANSIENT_FAILURE"] = 2] = "TRANSIENT_FAILURE";
     PickResultType[PickResultType["DROP"] = 3] = "DROP";
-})(PickResultType = exports.PickResultType || (exports.PickResultType = {}));
+})(PickResultType || (exports.PickResultType = PickResultType = {}));
 /**
  * A standard picker representing a load balancer in the TRANSIENT_FAILURE
  * state. Always responds to every pick request with an UNAVAILABLE status.
@@ -8539,8 +8471,8 @@ class UnavailablePicker {
             pickResultType: PickResultType.TRANSIENT_FAILURE,
             subchannel: null,
             status: this.status,
-            extraFilterFactories: [],
             onCallStarted: null,
+            onCallEnded: null,
         };
     }
 }
@@ -8569,8 +8501,8 @@ class QueuePicker {
             pickResultType: PickResultType.QUEUE,
             subchannel: null,
             status: null,
-            extraFilterFactories: [],
             onCallStarted: null,
+            onCallEnded: null,
         };
     }
 }
@@ -8630,7 +8562,7 @@ const dnsLookupPromise = util.promisify(dns.lookup);
 function mergeArrays(...arrays) {
     const result = [];
     for (let i = 0; i <
-        Math.max.apply(null, arrays.map((array) => array.length)); i++) {
+        Math.max.apply(null, arrays.map(array => array.length)); i++) {
         for (const array of arrays) {
             if (i < array.length) {
                 result.push(array[i]);
@@ -8654,15 +8586,16 @@ class DnsResolver {
         this.latestServiceConfigError = null;
         this.continueResolving = false;
         this.isNextResolutionTimerRunning = false;
-        trace('Resolver constructed for target ' + uri_parser_1.uriToString(target));
-        const hostPort = uri_parser_1.splitHostPort(target.path);
+        this.isServiceConfigEnabled = true;
+        trace('Resolver constructed for target ' + (0, uri_parser_1.uriToString)(target));
+        const hostPort = (0, uri_parser_1.splitHostPort)(target.path);
         if (hostPort === null) {
             this.ipResult = null;
             this.dnsHostname = null;
             this.port = null;
         }
         else {
-            if (net_1.isIPv4(hostPort.host) || net_1.isIPv6(hostPort.host)) {
+            if ((0, net_1.isIPv4)(hostPort.host) || (0, net_1.isIPv6)(hostPort.host)) {
                 this.ipResult = [
                     {
                         host: hostPort.host,
@@ -8679,9 +8612,12 @@ class DnsResolver {
             }
         }
         this.percentage = Math.random() * 100;
+        if (channelOptions['grpc.service_config_disable_resolution'] === 1) {
+            this.isServiceConfigEnabled = false;
+        }
         this.defaultResolutionError = {
             code: constants_1.Status.UNAVAILABLE,
-            details: `Name resolution failed for target ${uri_parser_1.uriToString(this.target)}`,
+            details: `Name resolution failed for target ${(0, uri_parser_1.uriToString)(this.target)}`,
             metadata: new metadata_1.Metadata(),
         };
         const backoffOptions = {
@@ -8694,7 +8630,8 @@ class DnsResolver {
             }
         }, backoffOptions);
         this.backoff.unref();
-        this.minTimeBetweenResolutionsMs = (_c = channelOptions['grpc.dns_min_time_between_resolutions_ms']) !== null && _c !== void 0 ? _c : DEFAULT_MIN_TIME_BETWEEN_RESOLUTIONS_MS;
+        this.minTimeBetweenResolutionsMs =
+            (_c = channelOptions['grpc.dns_min_time_between_resolutions_ms']) !== null && _c !== void 0 ? _c : DEFAULT_MIN_TIME_BETWEEN_RESOLUTIONS_MS;
         this.nextResolutionTimer = setTimeout(() => { }, 0);
         clearTimeout(this.nextResolutionTimer);
     }
@@ -8704,24 +8641,29 @@ class DnsResolver {
      */
     startResolution() {
         if (this.ipResult !== null) {
-            trace('Returning IP address for target ' + uri_parser_1.uriToString(this.target));
+            trace('Returning IP address for target ' + (0, uri_parser_1.uriToString)(this.target));
             setImmediate(() => {
-                this.backoff.reset();
                 this.listener.onSuccessfulResolution(this.ipResult, null, null, null, {});
             });
+            this.backoff.stop();
+            this.backoff.reset();
             return;
         }
         if (this.dnsHostname === null) {
-            trace('Failed to parse DNS address ' + uri_parser_1.uriToString(this.target));
+            trace('Failed to parse DNS address ' + (0, uri_parser_1.uriToString)(this.target));
             setImmediate(() => {
                 this.listener.onError({
                     code: constants_1.Status.UNAVAILABLE,
-                    details: `Failed to parse DNS address ${uri_parser_1.uriToString(this.target)}`,
+                    details: `Failed to parse DNS address ${(0, uri_parser_1.uriToString)(this.target)}`,
                     metadata: new metadata_1.Metadata(),
                 });
             });
+            this.stopNextResolutionTimer();
         }
         else {
+            if (this.pendingLookupPromise !== null) {
+                return;
+            }
             trace('Looking up DNS hostname ' + this.dnsHostname);
             /* We clear out latestLookupResult here to ensure that it contains the
              * latest result since the last time we started resolving. That way, the
@@ -8736,20 +8678,23 @@ class DnsResolver {
              * if the name exists but there are no records for that family, and that
              * error is indistinguishable from other kinds of errors */
             this.pendingLookupPromise = dnsLookupPromise(hostname, { all: true });
-            this.pendingLookupPromise.then((addressList) => {
+            this.pendingLookupPromise.then(addressList => {
+                if (this.pendingLookupPromise === null) {
+                    return;
+                }
                 this.pendingLookupPromise = null;
                 this.backoff.reset();
                 this.backoff.stop();
-                const ip4Addresses = addressList.filter((addr) => addr.family === 4);
-                const ip6Addresses = addressList.filter((addr) => addr.family === 6);
-                this.latestLookupResult = mergeArrays(ip6Addresses, ip4Addresses).map((addr) => ({ host: addr.address, port: +this.port }));
+                const ip4Addresses = addressList.filter(addr => addr.family === 4);
+                const ip6Addresses = addressList.filter(addr => addr.family === 6);
+                this.latestLookupResult = mergeArrays(ip6Addresses, ip4Addresses).map(addr => ({ host: addr.address, port: +this.port }));
                 const allAddressesString = '[' +
                     this.latestLookupResult
-                        .map((addr) => addr.host + ':' + addr.port)
+                        .map(addr => addr.host + ':' + addr.port)
                         .join(',') +
                     ']';
                 trace('Resolved addresses for target ' +
-                    uri_parser_1.uriToString(this.target) +
+                    (0, uri_parser_1.uriToString)(this.target) +
                     ': ' +
                     allAddressesString);
                 if (this.latestLookupResult.length === 0) {
@@ -8761,9 +8706,12 @@ class DnsResolver {
                  * empty TXT response. When the TXT lookup does finish, its handler
                  * can update the service config by using the same address list */
                 this.listener.onSuccessfulResolution(this.latestLookupResult, this.latestServiceConfig, this.latestServiceConfigError, null, {});
-            }, (err) => {
+            }, err => {
+                if (this.pendingLookupPromise === null) {
+                    return;
+                }
                 trace('Resolution error for target ' +
-                    uri_parser_1.uriToString(this.target) +
+                    (0, uri_parser_1.uriToString)(this.target) +
                     ': ' +
                     err.message);
                 this.pendingLookupPromise = null;
@@ -8772,20 +8720,23 @@ class DnsResolver {
             });
             /* If there already is a still-pending TXT resolution, we can just use
              * that result when it comes in */
-            if (this.pendingTxtPromise === null) {
+            if (this.isServiceConfigEnabled && this.pendingTxtPromise === null) {
                 /* We handle the TXT query promise differently than the others because
                  * the name resolution attempt as a whole is a success even if the TXT
                  * lookup fails */
                 this.pendingTxtPromise = resolveTxtPromise(hostname);
-                this.pendingTxtPromise.then((txtRecord) => {
+                this.pendingTxtPromise.then(txtRecord => {
+                    if (this.pendingTxtPromise === null) {
+                        return;
+                    }
                     this.pendingTxtPromise = null;
                     try {
-                        this.latestServiceConfig = service_config_1.extractAndSelectServiceConfig(txtRecord, this.percentage);
+                        this.latestServiceConfig = (0, service_config_1.extractAndSelectServiceConfig)(txtRecord, this.percentage);
                     }
                     catch (err) {
                         this.latestServiceConfigError = {
                             code: constants_1.Status.UNAVAILABLE,
-                            details: 'Parsing service config failed',
+                            details: `Parsing service config failed with error ${err.message}`,
                             metadata: new metadata_1.Metadata(),
                         };
                     }
@@ -8796,7 +8747,7 @@ class DnsResolver {
                          * should result in a fast and seamless switchover. */
                         this.listener.onSuccessfulResolution(this.latestLookupResult, this.latestServiceConfig, this.latestServiceConfigError, null, {});
                     }
-                }, (err) => {
+                }, err => {
                     /* If TXT lookup fails we should do nothing, which means that we
                      * continue to use the result of the most recent successful lookup,
                      * or the default null config object if there has never been a
@@ -8810,6 +8761,7 @@ class DnsResolver {
     }
     startNextResolutionTimer() {
         var _a, _b;
+        clearTimeout(this.nextResolutionTimer);
         this.nextResolutionTimer = (_b = (_a = setTimeout(() => {
             this.stopNextResolutionTimer();
             if (this.continueResolving) {
@@ -8823,9 +8775,12 @@ class DnsResolver {
         this.isNextResolutionTimerRunning = false;
     }
     startResolutionWithBackoff() {
-        this.startResolution();
-        this.backoff.runOnce();
-        this.startNextResolutionTimer();
+        if (this.pendingLookupPromise === null) {
+            this.continueResolving = false;
+            this.startResolution();
+            this.backoff.runOnce();
+            this.startNextResolutionTimer();
+        }
     }
     updateResolution() {
         /* If there is a pending lookup, just let it finish. Otherwise, if the
@@ -8841,10 +8796,21 @@ class DnsResolver {
             }
         }
     }
+    /**
+     * Reset the resolver to the same state it had when it was created. In-flight
+     * DNS requests cannot be cancelled, but they are discarded and their results
+     * will be ignored.
+     */
     destroy() {
         this.continueResolving = false;
+        this.backoff.reset();
         this.backoff.stop();
         this.stopNextResolutionTimer();
+        this.pendingLookupPromise = null;
+        this.pendingTxtPromise = null;
+        this.latestLookupResult = null;
+        this.latestServiceConfig = null;
+        this.latestServiceConfigError = null;
     }
     /**
      * Get the default authority for the given target. For IP targets, that is
@@ -8860,8 +8826,8 @@ class DnsResolver {
  * "dns:" prefix and as the default resolver.
  */
 function setup() {
-    resolver_1.registerResolver('dns', DnsResolver);
-    resolver_1.registerDefaultScheme('dns');
+    (0, resolver_1.registerResolver)('dns', DnsResolver);
+    (0, resolver_1.registerDefaultScheme)('dns');
 }
 exports.setup = setup;
 //# sourceMappingURL=resolver-dns.js.map
@@ -8909,11 +8875,10 @@ const DEFAULT_PORT = 443;
 class IpResolver {
     constructor(target, listener, channelOptions) {
         var _a;
-        this.target = target;
         this.listener = listener;
         this.addresses = [];
         this.error = null;
-        trace('Resolver constructed for target ' + uri_parser_1.uriToString(target));
+        trace('Resolver constructed for target ' + (0, uri_parser_1.uriToString)(target));
         const addresses = [];
         if (!(target.scheme === IPV4_SCHEME || target.scheme === IPV6_SCHEME)) {
             this.error = {
@@ -8925,7 +8890,7 @@ class IpResolver {
         }
         const pathList = target.path.split(',');
         for (const path of pathList) {
-            const hostPort = uri_parser_1.splitHostPort(path);
+            const hostPort = (0, uri_parser_1.splitHostPort)(path);
             if (hostPort === null) {
                 this.error = {
                     code: constants_1.Status.UNAVAILABLE,
@@ -8934,8 +8899,8 @@ class IpResolver {
                 };
                 return;
             }
-            if ((target.scheme === IPV4_SCHEME && !net_1.isIPv4(hostPort.host)) ||
-                (target.scheme === IPV6_SCHEME && !net_1.isIPv6(hostPort.host))) {
+            if ((target.scheme === IPV4_SCHEME && !(0, net_1.isIPv4)(hostPort.host)) ||
+                (target.scheme === IPV6_SCHEME && !(0, net_1.isIPv6)(hostPort.host))) {
                 this.error = {
                     code: constants_1.Status.UNAVAILABLE,
                     details: `Failed to parse ${target.scheme} address ${path}`,
@@ -8969,8 +8934,8 @@ class IpResolver {
     }
 }
 function setup() {
-    resolver_1.registerResolver(IPV4_SCHEME, IpResolver);
-    resolver_1.registerResolver(IPV6_SCHEME, IpResolver);
+    (0, resolver_1.registerResolver)(IPV4_SCHEME, IpResolver);
+    (0, resolver_1.registerResolver)(IPV6_SCHEME, IpResolver);
 }
 exports.setup = setup;
 //# sourceMappingURL=resolver-ip.js.map
@@ -9024,7 +8989,7 @@ class UdsResolver {
     }
 }
 function setup() {
-    resolver_1.registerResolver('unix', UdsResolver);
+    (0, resolver_1.registerResolver)('unix', UdsResolver);
 }
 exports.setup = setup;
 //# sourceMappingURL=resolver-uds.js.map
@@ -9088,7 +9053,7 @@ function createResolver(target, listener, options) {
         return new registeredResolvers[target.scheme](target, listener, options);
     }
     else {
-        throw new Error(`No resolver could be created for target ${uri_parser_1.uriToString(target)}`);
+        throw new Error(`No resolver could be created for target ${(0, uri_parser_1.uriToString)(target)}`);
     }
 }
 exports.createResolver = createResolver;
@@ -9102,7 +9067,7 @@ function getDefaultAuthority(target) {
         return registeredResolvers[target.scheme].getDefaultAuthority(target);
     }
     else {
-        throw new Error(`Invalid target ${uri_parser_1.uriToString(target)}`);
+        throw new Error(`Invalid target ${(0, uri_parser_1.uriToString)(target)}`);
     }
 }
 exports.getDefaultAuthority = getDefaultAuthority;
@@ -9112,7 +9077,7 @@ function mapUriDefaultScheme(target) {
             return {
                 scheme: defaultScheme,
                 authority: undefined,
-                path: uri_parser_1.uriToString(target),
+                path: (0, uri_parser_1.uriToString)(target),
             };
         }
         else {
@@ -9123,6 +9088,286 @@ function mapUriDefaultScheme(target) {
 }
 exports.mapUriDefaultScheme = mapUriDefaultScheme;
 //# sourceMappingURL=resolver.js.map
+
+/***/ }),
+
+/***/ 9909:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2022 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ResolvingCall = void 0;
+const constants_1 = __nccwpck_require__(634);
+const deadline_1 = __nccwpck_require__(511);
+const metadata_1 = __nccwpck_require__(3665);
+const logging = __nccwpck_require__(5993);
+const control_plane_status_1 = __nccwpck_require__(9129);
+const TRACER_NAME = 'resolving_call';
+class ResolvingCall {
+    constructor(channel, method, options, filterStackFactory, credentials, callNumber) {
+        this.channel = channel;
+        this.method = method;
+        this.filterStackFactory = filterStackFactory;
+        this.credentials = credentials;
+        this.callNumber = callNumber;
+        this.child = null;
+        this.readPending = false;
+        this.pendingMessage = null;
+        this.pendingHalfClose = false;
+        this.ended = false;
+        this.readFilterPending = false;
+        this.writeFilterPending = false;
+        this.pendingChildStatus = null;
+        this.metadata = null;
+        this.listener = null;
+        this.statusWatchers = [];
+        this.deadlineTimer = setTimeout(() => { }, 0);
+        this.filterStack = null;
+        this.deadline = options.deadline;
+        this.host = options.host;
+        if (options.parentCall) {
+            if (options.flags & constants_1.Propagate.CANCELLATION) {
+                options.parentCall.on('cancelled', () => {
+                    this.cancelWithStatus(constants_1.Status.CANCELLED, 'Cancelled by parent call');
+                });
+            }
+            if (options.flags & constants_1.Propagate.DEADLINE) {
+                this.trace('Propagating deadline from parent: ' +
+                    options.parentCall.getDeadline());
+                this.deadline = (0, deadline_1.minDeadline)(this.deadline, options.parentCall.getDeadline());
+            }
+        }
+        this.trace('Created');
+        this.runDeadlineTimer();
+    }
+    trace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, '[' + this.callNumber + '] ' + text);
+    }
+    runDeadlineTimer() {
+        clearTimeout(this.deadlineTimer);
+        this.trace('Deadline: ' + (0, deadline_1.deadlineToString)(this.deadline));
+        const timeout = (0, deadline_1.getRelativeTimeout)(this.deadline);
+        if (timeout !== Infinity) {
+            this.trace('Deadline will be reached in ' + timeout + 'ms');
+            const handleDeadline = () => {
+                this.cancelWithStatus(constants_1.Status.DEADLINE_EXCEEDED, 'Deadline exceeded');
+            };
+            if (timeout <= 0) {
+                process.nextTick(handleDeadline);
+            }
+            else {
+                this.deadlineTimer = setTimeout(handleDeadline, timeout);
+            }
+        }
+    }
+    outputStatus(status) {
+        if (!this.ended) {
+            this.ended = true;
+            if (!this.filterStack) {
+                this.filterStack = this.filterStackFactory.createFilter();
+            }
+            clearTimeout(this.deadlineTimer);
+            const filteredStatus = this.filterStack.receiveTrailers(status);
+            this.trace('ended with status: code=' +
+                filteredStatus.code +
+                ' details="' +
+                filteredStatus.details +
+                '"');
+            this.statusWatchers.forEach(watcher => watcher(filteredStatus));
+            process.nextTick(() => {
+                var _a;
+                (_a = this.listener) === null || _a === void 0 ? void 0 : _a.onReceiveStatus(filteredStatus);
+            });
+        }
+    }
+    sendMessageOnChild(context, message) {
+        if (!this.child) {
+            throw new Error('sendMessageonChild called with child not populated');
+        }
+        const child = this.child;
+        this.writeFilterPending = true;
+        this.filterStack.sendMessage(Promise.resolve({ message: message, flags: context.flags })).then(filteredMessage => {
+            this.writeFilterPending = false;
+            child.sendMessageWithContext(context, filteredMessage.message);
+            if (this.pendingHalfClose) {
+                child.halfClose();
+            }
+        }, (status) => {
+            this.cancelWithStatus(status.code, status.details);
+        });
+    }
+    getConfig() {
+        if (this.ended) {
+            return;
+        }
+        if (!this.metadata || !this.listener) {
+            throw new Error('getConfig called before start');
+        }
+        const configResult = this.channel.getConfig(this.method, this.metadata);
+        if (configResult.type === 'NONE') {
+            this.channel.queueCallForConfig(this);
+            return;
+        }
+        else if (configResult.type === 'ERROR') {
+            if (this.metadata.getOptions().waitForReady) {
+                this.channel.queueCallForConfig(this);
+            }
+            else {
+                this.outputStatus(configResult.error);
+            }
+            return;
+        }
+        // configResult.type === 'SUCCESS'
+        const config = configResult.config;
+        if (config.status !== constants_1.Status.OK) {
+            const { code, details } = (0, control_plane_status_1.restrictControlPlaneStatusCode)(config.status, 'Failed to route call to method ' + this.method);
+            this.outputStatus({
+                code: code,
+                details: details,
+                metadata: new metadata_1.Metadata(),
+            });
+            return;
+        }
+        if (config.methodConfig.timeout) {
+            const configDeadline = new Date();
+            configDeadline.setSeconds(configDeadline.getSeconds() + config.methodConfig.timeout.seconds);
+            configDeadline.setMilliseconds(configDeadline.getMilliseconds() +
+                config.methodConfig.timeout.nanos / 1000000);
+            this.deadline = (0, deadline_1.minDeadline)(this.deadline, configDeadline);
+            this.runDeadlineTimer();
+        }
+        this.filterStackFactory.push(config.dynamicFilterFactories);
+        this.filterStack = this.filterStackFactory.createFilter();
+        this.filterStack.sendMetadata(Promise.resolve(this.metadata)).then(filteredMetadata => {
+            this.child = this.channel.createInnerCall(config, this.method, this.host, this.credentials, this.deadline);
+            this.trace('Created child [' + this.child.getCallNumber() + ']');
+            this.child.start(filteredMetadata, {
+                onReceiveMetadata: metadata => {
+                    this.trace('Received metadata');
+                    this.listener.onReceiveMetadata(this.filterStack.receiveMetadata(metadata));
+                },
+                onReceiveMessage: message => {
+                    this.trace('Received message');
+                    this.readFilterPending = true;
+                    this.filterStack.receiveMessage(message).then(filteredMesssage => {
+                        this.trace('Finished filtering received message');
+                        this.readFilterPending = false;
+                        this.listener.onReceiveMessage(filteredMesssage);
+                        if (this.pendingChildStatus) {
+                            this.outputStatus(this.pendingChildStatus);
+                        }
+                    }, (status) => {
+                        this.cancelWithStatus(status.code, status.details);
+                    });
+                },
+                onReceiveStatus: status => {
+                    this.trace('Received status');
+                    if (this.readFilterPending) {
+                        this.pendingChildStatus = status;
+                    }
+                    else {
+                        this.outputStatus(status);
+                    }
+                },
+            });
+            if (this.readPending) {
+                this.child.startRead();
+            }
+            if (this.pendingMessage) {
+                this.sendMessageOnChild(this.pendingMessage.context, this.pendingMessage.message);
+            }
+            else if (this.pendingHalfClose) {
+                this.child.halfClose();
+            }
+        }, (status) => {
+            this.outputStatus(status);
+        });
+    }
+    reportResolverError(status) {
+        var _a;
+        if ((_a = this.metadata) === null || _a === void 0 ? void 0 : _a.getOptions().waitForReady) {
+            this.channel.queueCallForConfig(this);
+        }
+        else {
+            this.outputStatus(status);
+        }
+    }
+    cancelWithStatus(status, details) {
+        var _a;
+        this.trace('cancelWithStatus code: ' + status + ' details: "' + details + '"');
+        (_a = this.child) === null || _a === void 0 ? void 0 : _a.cancelWithStatus(status, details);
+        this.outputStatus({
+            code: status,
+            details: details,
+            metadata: new metadata_1.Metadata(),
+        });
+    }
+    getPeer() {
+        var _a, _b;
+        return (_b = (_a = this.child) === null || _a === void 0 ? void 0 : _a.getPeer()) !== null && _b !== void 0 ? _b : this.channel.getTarget();
+    }
+    start(metadata, listener) {
+        this.trace('start called');
+        this.metadata = metadata.clone();
+        this.listener = listener;
+        this.getConfig();
+    }
+    sendMessageWithContext(context, message) {
+        this.trace('write() called with message of length ' + message.length);
+        if (this.child) {
+            this.sendMessageOnChild(context, message);
+        }
+        else {
+            this.pendingMessage = { context, message };
+        }
+    }
+    startRead() {
+        this.trace('startRead called');
+        if (this.child) {
+            this.child.startRead();
+        }
+        else {
+            this.readPending = true;
+        }
+    }
+    halfClose() {
+        this.trace('halfClose called');
+        if (this.child && !this.writeFilterPending) {
+            this.child.halfClose();
+        }
+        else {
+            this.pendingHalfClose = true;
+        }
+    }
+    setCredentials(credentials) {
+        this.credentials = this.credentials.compose(credentials);
+    }
+    addStatusWatcher(watcher) {
+        this.statusWatchers.push(watcher);
+    }
+    getCallNumber() {
+        return this.callNumber;
+    }
+}
+exports.ResolvingCall = ResolvingCall;
+//# sourceMappingURL=resolving-call.js.map
 
 /***/ }),
 
@@ -9165,11 +9410,10 @@ const TRACER_NAME = 'resolving_load_balancer';
 function trace(text) {
     logging.trace(constants_2.LogVerbosity.DEBUG, TRACER_NAME, text);
 }
-const DEFAULT_LOAD_BALANCER_NAME = 'pick_first';
 function getDefaultConfigSelector(serviceConfig) {
     return function defaultConfigSelector(methodName, metadata) {
         var _a, _b;
-        const splitName = methodName.split('/').filter((x) => x.length > 0);
+        const splitName = methodName.split('/').filter(x => x.length > 0);
         const service = (_a = splitName[0]) !== null && _a !== void 0 ? _a : '';
         const method = (_b = splitName[1]) !== null && _b !== void 0 ? _b : '';
         if (serviceConfig && serviceConfig.methodConfig) {
@@ -9181,7 +9425,7 @@ function getDefaultConfigSelector(serviceConfig) {
                             methodConfig: methodConfig,
                             pickInformation: {},
                             status: constants_1.Status.OK,
-                            dynamicFilterFactories: []
+                            dynamicFilterFactories: [],
                         };
                     }
                 }
@@ -9191,7 +9435,7 @@ function getDefaultConfigSelector(serviceConfig) {
             methodConfig: { name: [] },
             pickInformation: {},
             status: constants_1.Status.OK,
-            dynamicFilterFactories: []
+            dynamicFilterFactories: [],
         };
     };
 }
@@ -9211,7 +9455,6 @@ class ResolvingLoadBalancer {
     constructor(target, channelControlHelper, channelOptions, onSuccessfulResolution, onFailedResolution) {
         this.target = target;
         this.channelControlHelper = channelControlHelper;
-        this.channelOptions = channelOptions;
         this.onSuccessfulResolution = onSuccessfulResolution;
         this.onFailedResolution = onFailedResolution;
         this.latestChildState = connectivity_state_1.ConnectivityState.IDLE;
@@ -9232,7 +9475,7 @@ class ResolvingLoadBalancer {
          */
         this.continueResolving = false;
         if (channelOptions['grpc.service_config']) {
-            this.defaultServiceConfig = service_config_1.validateServiceConfig(JSON.parse(channelOptions['grpc.service_config']));
+            this.defaultServiceConfig = (0, service_config_1.validateServiceConfig)(JSON.parse(channelOptions['grpc.service_config']));
         }
         else {
             this.defaultServiceConfig = {
@@ -9261,9 +9504,9 @@ class ResolvingLoadBalancer {
                 this.updateState(newState, picker);
             },
             addChannelzChild: channelControlHelper.addChannelzChild.bind(channelControlHelper),
-            removeChannelzChild: channelControlHelper.removeChannelzChild.bind(channelControlHelper)
+            removeChannelzChild: channelControlHelper.removeChannelzChild.bind(channelControlHelper),
         });
-        this.innerResolver = resolver_1.createResolver(target, {
+        this.innerResolver = (0, resolver_1.createResolver)(target, {
             onSuccessfulResolution: (addressList, serviceConfig, serviceConfigError, configSelector, attributes) => {
                 var _a;
                 let workingServiceConfig = null;
@@ -9296,7 +9539,7 @@ class ResolvingLoadBalancer {
                     this.previousServiceConfig = serviceConfig;
                 }
                 const workingConfigList = (_a = workingServiceConfig === null || workingServiceConfig === void 0 ? void 0 : workingServiceConfig.loadBalancingConfig) !== null && _a !== void 0 ? _a : [];
-                const loadBalancingConfig = load_balancer_1.getFirstUsableConfig(workingConfigList, true);
+                const loadBalancingConfig = (0, load_balancer_1.getFirstUsableConfig)(workingConfigList, true);
                 if (loadBalancingConfig === null) {
                     // There were load balancing configs but none are supported. This counts as a resolution failure
                     this.handleResolutionFailure({
@@ -9308,7 +9551,7 @@ class ResolvingLoadBalancer {
                 }
                 this.childLoadBalancer.updateAddressList(addressList, loadBalancingConfig, attributes);
                 const finalServiceConfig = workingServiceConfig !== null && workingServiceConfig !== void 0 ? workingServiceConfig : this.defaultServiceConfig;
-                this.onSuccessfulResolution(configSelector !== null && configSelector !== void 0 ? configSelector : getDefaultConfigSelector(finalServiceConfig));
+                this.onSuccessfulResolution(finalServiceConfig, configSelector !== null && configSelector !== void 0 ? configSelector : getDefaultConfigSelector(finalServiceConfig));
             },
             onError: (error) => {
                 this.handleResolutionFailure(error);
@@ -9334,9 +9577,10 @@ class ResolvingLoadBalancer {
         if (this.currentState === connectivity_state_1.ConnectivityState.IDLE) {
             this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
         }
+        this.backoffTimeout.runOnce();
     }
     updateState(connectivityState, picker) {
-        trace(uri_parser_1.uriToString(this.target) +
+        trace((0, uri_parser_1.uriToString)(this.target) +
             ' ' +
             connectivity_state_1.ConnectivityState[this.currentState] +
             ' -> ' +
@@ -9353,19 +9597,18 @@ class ResolvingLoadBalancer {
             this.updateState(connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE, new picker_1.UnavailablePicker(error));
             this.onFailedResolution(error);
         }
-        this.backoffTimeout.runOnce();
     }
     exitIdle() {
-        this.childLoadBalancer.exitIdle();
-        if (this.currentState === connectivity_state_1.ConnectivityState.IDLE) {
+        if (this.currentState === connectivity_state_1.ConnectivityState.IDLE ||
+            this.currentState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
             if (this.backoffTimeout.isRunning()) {
                 this.continueResolving = true;
             }
             else {
                 this.updateResolution();
             }
-            this.updateState(connectivity_state_1.ConnectivityState.CONNECTING, new picker_1.QueuePicker(this));
         }
+        this.childLoadBalancer.exitIdle();
     }
     updateAddressList(addressList, lbConfig) {
         throw new Error('updateAddressList not supported on ResolvingLoadBalancer');
@@ -9377,7 +9620,13 @@ class ResolvingLoadBalancer {
     destroy() {
         this.childLoadBalancer.destroy();
         this.innerResolver.destroy();
-        this.updateState(connectivity_state_1.ConnectivityState.SHUTDOWN, new picker_1.UnavailablePicker());
+        this.backoffTimeout.reset();
+        this.backoffTimeout.stop();
+        this.latestChildState = connectivity_state_1.ConnectivityState.IDLE;
+        this.latestChildPicker = new picker_1.QueuePicker(this);
+        this.currentState = connectivity_state_1.ConnectivityState.IDLE;
+        this.previousServiceConfig = null;
+        this.continueResolving = false;
     }
     getTypeName() {
         return 'resolving_load_balancer';
@@ -9385,6 +9634,652 @@ class ResolvingLoadBalancer {
 }
 exports.ResolvingLoadBalancer = ResolvingLoadBalancer;
 //# sourceMappingURL=resolving-load-balancer.js.map
+
+/***/ }),
+
+/***/ 8159:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2022 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.RetryingCall = exports.MessageBufferTracker = exports.RetryThrottler = void 0;
+const constants_1 = __nccwpck_require__(634);
+const metadata_1 = __nccwpck_require__(3665);
+const logging = __nccwpck_require__(5993);
+const TRACER_NAME = 'retrying_call';
+class RetryThrottler {
+    constructor(maxTokens, tokenRatio, previousRetryThrottler) {
+        this.maxTokens = maxTokens;
+        this.tokenRatio = tokenRatio;
+        if (previousRetryThrottler) {
+            /* When carrying over tokens from a previous config, rescale them to the
+             * new max value */
+            this.tokens =
+                previousRetryThrottler.tokens *
+                    (maxTokens / previousRetryThrottler.maxTokens);
+        }
+        else {
+            this.tokens = maxTokens;
+        }
+    }
+    addCallSucceeded() {
+        this.tokens = Math.max(this.tokens + this.tokenRatio, this.maxTokens);
+    }
+    addCallFailed() {
+        this.tokens = Math.min(this.tokens - 1, 0);
+    }
+    canRetryCall() {
+        return this.tokens > this.maxTokens / 2;
+    }
+}
+exports.RetryThrottler = RetryThrottler;
+class MessageBufferTracker {
+    constructor(totalLimit, limitPerCall) {
+        this.totalLimit = totalLimit;
+        this.limitPerCall = limitPerCall;
+        this.totalAllocated = 0;
+        this.allocatedPerCall = new Map();
+    }
+    allocate(size, callId) {
+        var _a;
+        const currentPerCall = (_a = this.allocatedPerCall.get(callId)) !== null && _a !== void 0 ? _a : 0;
+        if (this.limitPerCall - currentPerCall < size ||
+            this.totalLimit - this.totalAllocated < size) {
+            return false;
+        }
+        this.allocatedPerCall.set(callId, currentPerCall + size);
+        this.totalAllocated += size;
+        return true;
+    }
+    free(size, callId) {
+        var _a;
+        if (this.totalAllocated < size) {
+            throw new Error(`Invalid buffer allocation state: call ${callId} freed ${size} > total allocated ${this.totalAllocated}`);
+        }
+        this.totalAllocated -= size;
+        const currentPerCall = (_a = this.allocatedPerCall.get(callId)) !== null && _a !== void 0 ? _a : 0;
+        if (currentPerCall < size) {
+            throw new Error(`Invalid buffer allocation state: call ${callId} freed ${size} > allocated for call ${currentPerCall}`);
+        }
+        this.allocatedPerCall.set(callId, currentPerCall - size);
+    }
+    freeAll(callId) {
+        var _a;
+        const currentPerCall = (_a = this.allocatedPerCall.get(callId)) !== null && _a !== void 0 ? _a : 0;
+        if (this.totalAllocated < currentPerCall) {
+            throw new Error(`Invalid buffer allocation state: call ${callId} allocated ${currentPerCall} > total allocated ${this.totalAllocated}`);
+        }
+        this.totalAllocated -= currentPerCall;
+        this.allocatedPerCall.delete(callId);
+    }
+}
+exports.MessageBufferTracker = MessageBufferTracker;
+const PREVIONS_RPC_ATTEMPTS_METADATA_KEY = 'grpc-previous-rpc-attempts';
+class RetryingCall {
+    constructor(channel, callConfig, methodName, host, credentials, deadline, callNumber, bufferTracker, retryThrottler) {
+        this.channel = channel;
+        this.callConfig = callConfig;
+        this.methodName = methodName;
+        this.host = host;
+        this.credentials = credentials;
+        this.deadline = deadline;
+        this.callNumber = callNumber;
+        this.bufferTracker = bufferTracker;
+        this.retryThrottler = retryThrottler;
+        this.listener = null;
+        this.initialMetadata = null;
+        this.underlyingCalls = [];
+        this.writeBuffer = [];
+        /**
+         * The offset of message indices in the writeBuffer. For example, if
+         * writeBufferOffset is 10, message 10 is in writeBuffer[0] and message 15
+         * is in writeBuffer[5].
+         */
+        this.writeBufferOffset = 0;
+        /**
+         * Tracks whether a read has been started, so that we know whether to start
+         * reads on new child calls. This only matters for the first read, because
+         * once a message comes in the child call becomes committed and there will
+         * be no new child calls.
+         */
+        this.readStarted = false;
+        this.transparentRetryUsed = false;
+        /**
+         * Number of attempts so far
+         */
+        this.attempts = 0;
+        this.hedgingTimer = null;
+        this.committedCallIndex = null;
+        this.initialRetryBackoffSec = 0;
+        this.nextRetryBackoffSec = 0;
+        if (callConfig.methodConfig.retryPolicy) {
+            this.state = 'RETRY';
+            const retryPolicy = callConfig.methodConfig.retryPolicy;
+            this.nextRetryBackoffSec = this.initialRetryBackoffSec = Number(retryPolicy.initialBackoff.substring(0, retryPolicy.initialBackoff.length - 1));
+        }
+        else if (callConfig.methodConfig.hedgingPolicy) {
+            this.state = 'HEDGING';
+        }
+        else {
+            this.state = 'TRANSPARENT_ONLY';
+        }
+    }
+    getCallNumber() {
+        return this.callNumber;
+    }
+    trace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, '[' + this.callNumber + '] ' + text);
+    }
+    reportStatus(statusObject) {
+        this.trace('ended with status: code=' +
+            statusObject.code +
+            ' details="' +
+            statusObject.details +
+            '"');
+        this.bufferTracker.freeAll(this.callNumber);
+        this.writeBufferOffset = this.writeBufferOffset + this.writeBuffer.length;
+        this.writeBuffer = [];
+        process.nextTick(() => {
+            var _a;
+            // Explicitly construct status object to remove progress field
+            (_a = this.listener) === null || _a === void 0 ? void 0 : _a.onReceiveStatus({
+                code: statusObject.code,
+                details: statusObject.details,
+                metadata: statusObject.metadata,
+            });
+        });
+    }
+    cancelWithStatus(status, details) {
+        this.trace('cancelWithStatus code: ' + status + ' details: "' + details + '"');
+        this.reportStatus({ code: status, details, metadata: new metadata_1.Metadata() });
+        for (const { call } of this.underlyingCalls) {
+            call.cancelWithStatus(status, details);
+        }
+    }
+    getPeer() {
+        if (this.committedCallIndex !== null) {
+            return this.underlyingCalls[this.committedCallIndex].call.getPeer();
+        }
+        else {
+            return 'unknown';
+        }
+    }
+    getBufferEntry(messageIndex) {
+        var _a;
+        return ((_a = this.writeBuffer[messageIndex - this.writeBufferOffset]) !== null && _a !== void 0 ? _a : {
+            entryType: 'FREED',
+            allocated: false,
+        });
+    }
+    getNextBufferIndex() {
+        return this.writeBufferOffset + this.writeBuffer.length;
+    }
+    clearSentMessages() {
+        if (this.state !== 'COMMITTED') {
+            return;
+        }
+        const earliestNeededMessageIndex = this.underlyingCalls[this.committedCallIndex].nextMessageToSend;
+        for (let messageIndex = this.writeBufferOffset; messageIndex < earliestNeededMessageIndex; messageIndex++) {
+            const bufferEntry = this.getBufferEntry(messageIndex);
+            if (bufferEntry.allocated) {
+                this.bufferTracker.free(bufferEntry.message.message.length, this.callNumber);
+            }
+        }
+        this.writeBuffer = this.writeBuffer.slice(earliestNeededMessageIndex - this.writeBufferOffset);
+        this.writeBufferOffset = earliestNeededMessageIndex;
+    }
+    commitCall(index) {
+        if (this.state === 'COMMITTED') {
+            return;
+        }
+        if (this.underlyingCalls[index].state === 'COMPLETED') {
+            return;
+        }
+        this.trace('Committing call [' +
+            this.underlyingCalls[index].call.getCallNumber() +
+            '] at index ' +
+            index);
+        this.state = 'COMMITTED';
+        this.committedCallIndex = index;
+        for (let i = 0; i < this.underlyingCalls.length; i++) {
+            if (i === index) {
+                continue;
+            }
+            if (this.underlyingCalls[i].state === 'COMPLETED') {
+                continue;
+            }
+            this.underlyingCalls[i].state = 'COMPLETED';
+            this.underlyingCalls[i].call.cancelWithStatus(constants_1.Status.CANCELLED, 'Discarded in favor of other hedged attempt');
+        }
+        this.clearSentMessages();
+    }
+    commitCallWithMostMessages() {
+        if (this.state === 'COMMITTED') {
+            return;
+        }
+        let mostMessages = -1;
+        let callWithMostMessages = -1;
+        for (const [index, childCall] of this.underlyingCalls.entries()) {
+            if (childCall.state === 'ACTIVE' &&
+                childCall.nextMessageToSend > mostMessages) {
+                mostMessages = childCall.nextMessageToSend;
+                callWithMostMessages = index;
+            }
+        }
+        if (callWithMostMessages === -1) {
+            /* There are no active calls, disable retries to force the next call that
+             * is started to be committed. */
+            this.state = 'TRANSPARENT_ONLY';
+        }
+        else {
+            this.commitCall(callWithMostMessages);
+        }
+    }
+    isStatusCodeInList(list, code) {
+        return list.some(value => value === code ||
+            value.toString().toLowerCase() === constants_1.Status[code].toLowerCase());
+    }
+    getNextRetryBackoffMs() {
+        var _a;
+        const retryPolicy = (_a = this.callConfig) === null || _a === void 0 ? void 0 : _a.methodConfig.retryPolicy;
+        if (!retryPolicy) {
+            return 0;
+        }
+        const nextBackoffMs = Math.random() * this.nextRetryBackoffSec * 1000;
+        const maxBackoffSec = Number(retryPolicy.maxBackoff.substring(0, retryPolicy.maxBackoff.length - 1));
+        this.nextRetryBackoffSec = Math.min(this.nextRetryBackoffSec * retryPolicy.backoffMultiplier, maxBackoffSec);
+        return nextBackoffMs;
+    }
+    maybeRetryCall(pushback, callback) {
+        if (this.state !== 'RETRY') {
+            callback(false);
+            return;
+        }
+        const retryPolicy = this.callConfig.methodConfig.retryPolicy;
+        if (this.attempts >= Math.min(retryPolicy.maxAttempts, 5)) {
+            callback(false);
+            return;
+        }
+        let retryDelayMs;
+        if (pushback === null) {
+            retryDelayMs = this.getNextRetryBackoffMs();
+        }
+        else if (pushback < 0) {
+            this.state = 'TRANSPARENT_ONLY';
+            callback(false);
+            return;
+        }
+        else {
+            retryDelayMs = pushback;
+            this.nextRetryBackoffSec = this.initialRetryBackoffSec;
+        }
+        setTimeout(() => {
+            var _a, _b;
+            if (this.state !== 'RETRY') {
+                callback(false);
+                return;
+            }
+            if ((_b = (_a = this.retryThrottler) === null || _a === void 0 ? void 0 : _a.canRetryCall()) !== null && _b !== void 0 ? _b : true) {
+                callback(true);
+                this.attempts += 1;
+                this.startNewAttempt();
+            }
+        }, retryDelayMs);
+    }
+    countActiveCalls() {
+        let count = 0;
+        for (const call of this.underlyingCalls) {
+            if ((call === null || call === void 0 ? void 0 : call.state) === 'ACTIVE') {
+                count += 1;
+            }
+        }
+        return count;
+    }
+    handleProcessedStatus(status, callIndex, pushback) {
+        var _a, _b, _c;
+        switch (this.state) {
+            case 'COMMITTED':
+            case 'TRANSPARENT_ONLY':
+                this.commitCall(callIndex);
+                this.reportStatus(status);
+                break;
+            case 'HEDGING':
+                if (this.isStatusCodeInList((_a = this.callConfig.methodConfig.hedgingPolicy.nonFatalStatusCodes) !== null && _a !== void 0 ? _a : [], status.code)) {
+                    (_b = this.retryThrottler) === null || _b === void 0 ? void 0 : _b.addCallFailed();
+                    let delayMs;
+                    if (pushback === null) {
+                        delayMs = 0;
+                    }
+                    else if (pushback < 0) {
+                        this.state = 'TRANSPARENT_ONLY';
+                        this.commitCall(callIndex);
+                        this.reportStatus(status);
+                        return;
+                    }
+                    else {
+                        delayMs = pushback;
+                    }
+                    setTimeout(() => {
+                        this.maybeStartHedgingAttempt();
+                        // If after trying to start a call there are no active calls, this was the last one
+                        if (this.countActiveCalls() === 0) {
+                            this.commitCall(callIndex);
+                            this.reportStatus(status);
+                        }
+                    }, delayMs);
+                }
+                else {
+                    this.commitCall(callIndex);
+                    this.reportStatus(status);
+                }
+                break;
+            case 'RETRY':
+                if (this.isStatusCodeInList(this.callConfig.methodConfig.retryPolicy.retryableStatusCodes, status.code)) {
+                    (_c = this.retryThrottler) === null || _c === void 0 ? void 0 : _c.addCallFailed();
+                    this.maybeRetryCall(pushback, retried => {
+                        if (!retried) {
+                            this.commitCall(callIndex);
+                            this.reportStatus(status);
+                        }
+                    });
+                }
+                else {
+                    this.commitCall(callIndex);
+                    this.reportStatus(status);
+                }
+                break;
+        }
+    }
+    getPushback(metadata) {
+        const mdValue = metadata.get('grpc-retry-pushback-ms');
+        if (mdValue.length === 0) {
+            return null;
+        }
+        try {
+            return parseInt(mdValue[0]);
+        }
+        catch (e) {
+            return -1;
+        }
+    }
+    handleChildStatus(status, callIndex) {
+        var _a;
+        if (this.underlyingCalls[callIndex].state === 'COMPLETED') {
+            return;
+        }
+        this.trace('state=' +
+            this.state +
+            ' handling status with progress ' +
+            status.progress +
+            ' from child [' +
+            this.underlyingCalls[callIndex].call.getCallNumber() +
+            '] in state ' +
+            this.underlyingCalls[callIndex].state);
+        this.underlyingCalls[callIndex].state = 'COMPLETED';
+        if (status.code === constants_1.Status.OK) {
+            (_a = this.retryThrottler) === null || _a === void 0 ? void 0 : _a.addCallSucceeded();
+            this.commitCall(callIndex);
+            this.reportStatus(status);
+            return;
+        }
+        if (this.state === 'COMMITTED') {
+            this.reportStatus(status);
+            return;
+        }
+        const pushback = this.getPushback(status.metadata);
+        switch (status.progress) {
+            case 'NOT_STARTED':
+                // RPC never leaves the client, always safe to retry
+                this.startNewAttempt();
+                break;
+            case 'REFUSED':
+                // RPC reaches the server library, but not the server application logic
+                if (this.transparentRetryUsed) {
+                    this.handleProcessedStatus(status, callIndex, pushback);
+                }
+                else {
+                    this.transparentRetryUsed = true;
+                    this.startNewAttempt();
+                }
+                break;
+            case 'DROP':
+                this.commitCall(callIndex);
+                this.reportStatus(status);
+                break;
+            case 'PROCESSED':
+                this.handleProcessedStatus(status, callIndex, pushback);
+                break;
+        }
+    }
+    maybeStartHedgingAttempt() {
+        if (this.state !== 'HEDGING') {
+            return;
+        }
+        if (!this.callConfig.methodConfig.hedgingPolicy) {
+            return;
+        }
+        const hedgingPolicy = this.callConfig.methodConfig.hedgingPolicy;
+        if (this.attempts >= Math.min(hedgingPolicy.maxAttempts, 5)) {
+            return;
+        }
+        this.attempts += 1;
+        this.startNewAttempt();
+        this.maybeStartHedgingTimer();
+    }
+    maybeStartHedgingTimer() {
+        var _a, _b, _c;
+        if (this.hedgingTimer) {
+            clearTimeout(this.hedgingTimer);
+        }
+        if (this.state !== 'HEDGING') {
+            return;
+        }
+        if (!this.callConfig.methodConfig.hedgingPolicy) {
+            return;
+        }
+        const hedgingPolicy = this.callConfig.methodConfig.hedgingPolicy;
+        if (this.attempts >= Math.min(hedgingPolicy.maxAttempts, 5)) {
+            return;
+        }
+        const hedgingDelayString = (_a = hedgingPolicy.hedgingDelay) !== null && _a !== void 0 ? _a : '0s';
+        const hedgingDelaySec = Number(hedgingDelayString.substring(0, hedgingDelayString.length - 1));
+        this.hedgingTimer = setTimeout(() => {
+            this.maybeStartHedgingAttempt();
+        }, hedgingDelaySec * 1000);
+        (_c = (_b = this.hedgingTimer).unref) === null || _c === void 0 ? void 0 : _c.call(_b);
+    }
+    startNewAttempt() {
+        const child = this.channel.createLoadBalancingCall(this.callConfig, this.methodName, this.host, this.credentials, this.deadline);
+        this.trace('Created child call [' +
+            child.getCallNumber() +
+            '] for attempt ' +
+            this.attempts);
+        const index = this.underlyingCalls.length;
+        this.underlyingCalls.push({
+            state: 'ACTIVE',
+            call: child,
+            nextMessageToSend: 0,
+        });
+        const previousAttempts = this.attempts - 1;
+        const initialMetadata = this.initialMetadata.clone();
+        if (previousAttempts > 0) {
+            initialMetadata.set(PREVIONS_RPC_ATTEMPTS_METADATA_KEY, `${previousAttempts}`);
+        }
+        let receivedMetadata = false;
+        child.start(initialMetadata, {
+            onReceiveMetadata: metadata => {
+                this.trace('Received metadata from child [' + child.getCallNumber() + ']');
+                this.commitCall(index);
+                receivedMetadata = true;
+                if (previousAttempts > 0) {
+                    metadata.set(PREVIONS_RPC_ATTEMPTS_METADATA_KEY, `${previousAttempts}`);
+                }
+                if (this.underlyingCalls[index].state === 'ACTIVE') {
+                    this.listener.onReceiveMetadata(metadata);
+                }
+            },
+            onReceiveMessage: message => {
+                this.trace('Received message from child [' + child.getCallNumber() + ']');
+                this.commitCall(index);
+                if (this.underlyingCalls[index].state === 'ACTIVE') {
+                    this.listener.onReceiveMessage(message);
+                }
+            },
+            onReceiveStatus: status => {
+                this.trace('Received status from child [' + child.getCallNumber() + ']');
+                if (!receivedMetadata && previousAttempts > 0) {
+                    status.metadata.set(PREVIONS_RPC_ATTEMPTS_METADATA_KEY, `${previousAttempts}`);
+                }
+                this.handleChildStatus(status, index);
+            },
+        });
+        this.sendNextChildMessage(index);
+        if (this.readStarted) {
+            child.startRead();
+        }
+    }
+    start(metadata, listener) {
+        this.trace('start called');
+        this.listener = listener;
+        this.initialMetadata = metadata;
+        this.attempts += 1;
+        this.startNewAttempt();
+        this.maybeStartHedgingTimer();
+    }
+    handleChildWriteCompleted(childIndex) {
+        var _a, _b;
+        const childCall = this.underlyingCalls[childIndex];
+        const messageIndex = childCall.nextMessageToSend;
+        (_b = (_a = this.getBufferEntry(messageIndex)).callback) === null || _b === void 0 ? void 0 : _b.call(_a);
+        this.clearSentMessages();
+        childCall.nextMessageToSend += 1;
+        this.sendNextChildMessage(childIndex);
+    }
+    sendNextChildMessage(childIndex) {
+        const childCall = this.underlyingCalls[childIndex];
+        if (childCall.state === 'COMPLETED') {
+            return;
+        }
+        if (this.getBufferEntry(childCall.nextMessageToSend)) {
+            const bufferEntry = this.getBufferEntry(childCall.nextMessageToSend);
+            switch (bufferEntry.entryType) {
+                case 'MESSAGE':
+                    childCall.call.sendMessageWithContext({
+                        callback: error => {
+                            // Ignore error
+                            this.handleChildWriteCompleted(childIndex);
+                        },
+                    }, bufferEntry.message.message);
+                    break;
+                case 'HALF_CLOSE':
+                    childCall.nextMessageToSend += 1;
+                    childCall.call.halfClose();
+                    break;
+                case 'FREED':
+                    // Should not be possible
+                    break;
+            }
+        }
+    }
+    sendMessageWithContext(context, message) {
+        var _a;
+        this.trace('write() called with message of length ' + message.length);
+        const writeObj = {
+            message,
+            flags: context.flags,
+        };
+        const messageIndex = this.getNextBufferIndex();
+        const bufferEntry = {
+            entryType: 'MESSAGE',
+            message: writeObj,
+            allocated: this.bufferTracker.allocate(message.length, this.callNumber),
+        };
+        this.writeBuffer.push(bufferEntry);
+        if (bufferEntry.allocated) {
+            (_a = context.callback) === null || _a === void 0 ? void 0 : _a.call(context);
+            for (const [callIndex, call] of this.underlyingCalls.entries()) {
+                if (call.state === 'ACTIVE' &&
+                    call.nextMessageToSend === messageIndex) {
+                    call.call.sendMessageWithContext({
+                        callback: error => {
+                            // Ignore error
+                            this.handleChildWriteCompleted(callIndex);
+                        },
+                    }, message);
+                }
+            }
+        }
+        else {
+            this.commitCallWithMostMessages();
+            // commitCallWithMostMessages can fail if we are between ping attempts
+            if (this.committedCallIndex === null) {
+                return;
+            }
+            const call = this.underlyingCalls[this.committedCallIndex];
+            bufferEntry.callback = context.callback;
+            if (call.state === 'ACTIVE' && call.nextMessageToSend === messageIndex) {
+                call.call.sendMessageWithContext({
+                    callback: error => {
+                        // Ignore error
+                        this.handleChildWriteCompleted(this.committedCallIndex);
+                    },
+                }, message);
+            }
+        }
+    }
+    startRead() {
+        this.trace('startRead called');
+        this.readStarted = true;
+        for (const underlyingCall of this.underlyingCalls) {
+            if ((underlyingCall === null || underlyingCall === void 0 ? void 0 : underlyingCall.state) === 'ACTIVE') {
+                underlyingCall.call.startRead();
+            }
+        }
+    }
+    halfClose() {
+        this.trace('halfClose called');
+        const halfCloseIndex = this.getNextBufferIndex();
+        this.writeBuffer.push({
+            entryType: 'HALF_CLOSE',
+            allocated: false,
+        });
+        for (const call of this.underlyingCalls) {
+            if ((call === null || call === void 0 ? void 0 : call.state) === 'ACTIVE' &&
+                call.nextMessageToSend === halfCloseIndex) {
+                call.nextMessageToSend += 1;
+                call.call.halfClose();
+            }
+        }
+    }
+    setCredentials(newCredentials) {
+        throw new Error('Method not implemented.');
+    }
+    getMethod() {
+        return this.methodName;
+    }
+    getHost() {
+        return this.host;
+    }
+}
+exports.RetryingCall = RetryingCall;
+//# sourceMappingURL=retrying-call.js.map
 
 /***/ }),
 
@@ -9415,11 +10310,15 @@ const events_1 = __nccwpck_require__(2361);
 const http2 = __nccwpck_require__(5158);
 const stream_1 = __nccwpck_require__(2781);
 const zlib = __nccwpck_require__(9796);
+const util_1 = __nccwpck_require__(3837);
 const constants_1 = __nccwpck_require__(634);
 const metadata_1 = __nccwpck_require__(3665);
 const stream_decoder_1 = __nccwpck_require__(6575);
 const logging = __nccwpck_require__(5993);
+const error_1 = __nccwpck_require__(2336);
 const TRACER_NAME = 'server_call';
+const unzip = (0, util_1.promisify)(zlib.unzip);
+const inflate = (0, util_1.promisify)(zlib.inflate);
 function trace(text) {
     logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, text);
 }
@@ -9437,11 +10336,13 @@ const deadlineUnitsToMs = {
     u: 0.001,
     n: 0.000001,
 };
-const defaultResponseHeaders = {
+const defaultCompressionHeaders = {
     // TODO(cjihrig): Remove these encoding headers from the default response
     // once compression is integrated.
     [GRPC_ACCEPT_ENCODING_HEADER]: 'identity,deflate,gzip',
     [GRPC_ENCODING_HEADER]: 'identity',
+};
+const defaultResponseHeaders = {
     [http2.constants.HTTP2_HEADER_STATUS]: http2.constants.HTTP_STATUS_OK,
     [http2.constants.HTTP2_HEADER_CONTENT_TYPE]: 'application/grpc+proto',
 };
@@ -9465,6 +10366,9 @@ class ServerUnaryCallImpl extends events_1.EventEmitter {
     }
     getDeadline() {
         return this.call.getDeadline();
+    }
+    getPath() {
+        return this.call.getPath();
     }
 }
 exports.ServerUnaryCallImpl = ServerUnaryCallImpl;
@@ -9493,6 +10397,9 @@ class ServerReadableStreamImpl extends stream_1.Readable {
     getDeadline() {
         return this.call.getDeadline();
     }
+    getPath() {
+        return this.call.getPath();
+    }
 }
 exports.ServerReadableStreamImpl = ServerReadableStreamImpl;
 class ServerWritableStreamImpl extends stream_1.Writable {
@@ -9505,7 +10412,7 @@ class ServerWritableStreamImpl extends stream_1.Writable {
         this.cancelled = false;
         this.trailingMetadata = new metadata_1.Metadata();
         this.call.setupSurfaceCall(this);
-        this.on('error', (err) => {
+        this.on('error', err => {
             this.call.sendError(err);
             this.end();
         });
@@ -9519,6 +10426,9 @@ class ServerWritableStreamImpl extends stream_1.Writable {
     getDeadline() {
         return this.call.getDeadline();
     }
+    getPath() {
+        return this.call.getPath();
+    }
     _write(chunk, encoding, 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     callback) {
@@ -9530,8 +10440,10 @@ class ServerWritableStreamImpl extends stream_1.Writable {
             }
         }
         catch (err) {
-            err.code = constants_1.Status.INTERNAL;
-            this.emit('error', err);
+            this.emit('error', {
+                details: (0, error_1.getErrorMessage)(err),
+                code: constants_1.Status.INTERNAL,
+            });
         }
         callback();
     }
@@ -9563,7 +10475,7 @@ class ServerDuplexStreamImpl extends stream_1.Duplex {
         this.trailingMetadata = new metadata_1.Metadata();
         this.call.setupSurfaceCall(this);
         this.call.setupReadable(this, encoding);
-        this.on('error', (err) => {
+        this.on('error', err => {
             this.call.sendError(err);
             this.end();
         });
@@ -9576,6 +10488,9 @@ class ServerDuplexStreamImpl extends stream_1.Duplex {
     }
     getDeadline() {
         return this.call.getDeadline();
+    }
+    getPath() {
+        return this.call.getPath();
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     end(metadata) {
@@ -9598,9 +10513,9 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         super();
         this.stream = stream;
         this.handler = handler;
-        this.options = options;
         this.cancelled = false;
-        this.deadlineTimer = setTimeout(() => { }, 0);
+        this.deadlineTimer = null;
+        this.statusSent = false;
         this.deadline = Infinity;
         this.wantTrailers = false;
         this.metadataSent = false;
@@ -9619,13 +10534,22 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         });
         this.stream.once('close', () => {
             var _a;
-            trace('Request to method ' + ((_a = this.handler) === null || _a === void 0 ? void 0 : _a.path) +
+            trace('Request to method ' +
+                ((_a = this.handler) === null || _a === void 0 ? void 0 : _a.path) +
                 ' stream closed with rstCode ' +
                 this.stream.rstCode);
-            this.cancelled = true;
-            this.emit('cancelled', 'cancelled');
-            this.emit('streamEnd', false);
-            this.sendStatus({ code: constants_1.Status.CANCELLED, details: 'Cancelled by client', metadata: new metadata_1.Metadata() });
+            if (!this.statusSent) {
+                this.cancelled = true;
+                this.emit('cancelled', 'cancelled');
+                this.emit('streamEnd', false);
+                this.sendStatus({
+                    code: constants_1.Status.CANCELLED,
+                    details: 'Cancelled by client',
+                    metadata: null,
+                });
+                if (this.deadlineTimer)
+                    clearTimeout(this.deadlineTimer);
+            }
         });
         this.stream.on('drain', () => {
             this.emit('drain');
@@ -9636,8 +10560,6 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         if ('grpc.max_receive_message_length' in options) {
             this.maxReceiveMessageSize = options['grpc.max_receive_message_length'];
         }
-        // Clear noop timer
-        clearTimeout(this.deadlineTimer);
     }
     checkCancelled() {
         /* In some cases the stream can become destroyed before the close event
@@ -9648,50 +10570,19 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         return this.cancelled;
     }
     getDecompressedMessage(message, encoding) {
-        switch (encoding) {
-            case 'deflate': {
-                return new Promise((resolve, reject) => {
-                    zlib.inflate(message.slice(5), (err, output) => {
-                        if (err) {
-                            this.sendError({
-                                code: constants_1.Status.INTERNAL,
-                                details: `Received "grpc-encoding" header "${encoding}" but ${encoding} decompression failed`,
-                            });
-                            resolve();
-                        }
-                        else {
-                            resolve(output);
-                        }
-                    });
-                });
-            }
-            case 'gzip': {
-                return new Promise((resolve, reject) => {
-                    zlib.unzip(message.slice(5), (err, output) => {
-                        if (err) {
-                            this.sendError({
-                                code: constants_1.Status.INTERNAL,
-                                details: `Received "grpc-encoding" header "${encoding}" but ${encoding} decompression failed`,
-                            });
-                            resolve();
-                        }
-                        else {
-                            resolve(output);
-                        }
-                    });
-                });
-            }
-            case 'identity': {
-                return Promise.resolve(message.slice(5));
-            }
-            default: {
-                this.sendError({
-                    code: constants_1.Status.UNIMPLEMENTED,
-                    details: `Received message compressed with unsupported encoding "${encoding}"`,
-                });
-                return Promise.resolve();
-            }
+        if (encoding === 'deflate') {
+            return inflate(message.subarray(5));
         }
+        else if (encoding === 'gzip') {
+            return unzip(message.subarray(5));
+        }
+        else if (encoding === 'identity') {
+            return message.subarray(5);
+        }
+        return Promise.reject({
+            code: constants_1.Status.UNIMPLEMENTED,
+            details: `Received message compressed with unsupported encoding "${encoding}"`,
+        });
     }
     sendMetadata(customMetadata) {
         if (this.checkCancelled()) {
@@ -9703,11 +10594,17 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         this.metadataSent = true;
         const custom = customMetadata ? customMetadata.toHttp2Headers() : null;
         // TODO(cjihrig): Include compression headers.
-        const headers = Object.assign({}, defaultResponseHeaders, custom);
+        const headers = Object.assign(Object.assign(Object.assign({}, defaultResponseHeaders), defaultCompressionHeaders), custom);
         this.stream.respond(headers, defaultResponseOptions);
     }
     receiveMetadata(headers) {
         const metadata = metadata_1.Metadata.fromHttp2Headers(headers);
+        if (logging.isTracerEnabled(TRACER_NAME)) {
+            trace('Request to ' +
+                this.handler.path +
+                ' received headers ' +
+                JSON.stringify(metadata.toJSON()));
+        }
         // TODO(cjihrig): Receive compression metadata.
         const timeoutHeader = metadata.get(GRPC_TIMEOUT_HEADER);
         if (timeoutHeader.length > 0) {
@@ -9733,44 +10630,72 @@ class Http2ServerCallStream extends events_1.EventEmitter {
     }
     receiveUnaryMessage(encoding) {
         return new Promise((resolve, reject) => {
-            const stream = this.stream;
-            const chunks = [];
-            let totalLength = 0;
-            stream.on('data', (data) => {
-                chunks.push(data);
-                totalLength += data.byteLength;
-            });
-            stream.once('end', async () => {
-                try {
-                    const requestBytes = Buffer.concat(chunks, totalLength);
-                    if (this.maxReceiveMessageSize !== -1 &&
-                        requestBytes.length > this.maxReceiveMessageSize) {
-                        this.sendError({
-                            code: constants_1.Status.RESOURCE_EXHAUSTED,
-                            details: `Received message larger than max (${requestBytes.length} vs. ${this.maxReceiveMessageSize})`,
-                        });
-                        resolve();
-                    }
-                    this.emit('receiveMessage');
-                    const compressed = requestBytes.readUInt8(0) === 1;
-                    const compressedMessageEncoding = compressed ? encoding : 'identity';
-                    const decompressedMessage = await this.getDecompressedMessage(requestBytes, compressedMessageEncoding);
-                    // Encountered an error with decompression; it'll already have been propogated back
-                    // Just return early
-                    if (!decompressedMessage) {
-                        resolve();
-                    }
-                    else {
-                        resolve(this.deserializeMessage(decompressedMessage));
-                    }
+            const { stream } = this;
+            let receivedLength = 0;
+            // eslint-disable-next-line @typescript-eslint/no-this-alias
+            const call = this;
+            const body = [];
+            const limit = this.maxReceiveMessageSize;
+            this.stream.on('data', onData);
+            this.stream.on('end', onEnd);
+            this.stream.on('error', onEnd);
+            function onData(chunk) {
+                receivedLength += chunk.byteLength;
+                if (limit !== -1 && receivedLength > limit) {
+                    stream.removeListener('data', onData);
+                    stream.removeListener('end', onEnd);
+                    stream.removeListener('error', onEnd);
+                    reject({
+                        code: constants_1.Status.RESOURCE_EXHAUSTED,
+                        details: `Received message larger than max (${receivedLength} vs. ${limit})`,
+                    });
+                    return;
                 }
-                catch (err) {
-                    err.code = constants_1.Status.INTERNAL;
-                    this.sendError(err);
-                    resolve();
+                body.push(chunk);
+            }
+            function onEnd(err) {
+                stream.removeListener('data', onData);
+                stream.removeListener('end', onEnd);
+                stream.removeListener('error', onEnd);
+                if (err !== undefined) {
+                    reject({ code: constants_1.Status.INTERNAL, details: err.message });
+                    return;
                 }
-            });
+                if (receivedLength === 0) {
+                    reject({
+                        code: constants_1.Status.INTERNAL,
+                        details: 'received empty unary message',
+                    });
+                    return;
+                }
+                call.emit('receiveMessage');
+                const requestBytes = Buffer.concat(body, receivedLength);
+                const compressed = requestBytes.readUInt8(0) === 1;
+                const compressedMessageEncoding = compressed ? encoding : 'identity';
+                const decompressedMessage = call.getDecompressedMessage(requestBytes, compressedMessageEncoding);
+                if (Buffer.isBuffer(decompressedMessage)) {
+                    resolve(call.deserializeMessageWithInternalError(decompressedMessage));
+                    return;
+                }
+                decompressedMessage.then(decompressed => resolve(call.deserializeMessageWithInternalError(decompressed)), (err) => reject(err.code
+                    ? err
+                    : {
+                        code: constants_1.Status.INTERNAL,
+                        details: `Received "grpc-encoding" header "${encoding}" but ${encoding} decompression failed`,
+                    }));
+            }
         });
+    }
+    async deserializeMessageWithInternalError(buffer) {
+        try {
+            return this.deserializeMessage(buffer);
+        }
+        catch (err) {
+            throw {
+                details: (0, error_1.getErrorMessage)(err),
+                code: constants_1.Status.INTERNAL,
+            };
+        }
     }
     serializeMessage(value) {
         const messageBuffer = this.handler.serialize(value);
@@ -9789,11 +10714,11 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         if (this.checkCancelled()) {
             return;
         }
-        if (!metadata) {
-            metadata = new metadata_1.Metadata();
+        if (metadata === undefined) {
+            metadata = null;
         }
         if (err) {
-            if (!Object.prototype.hasOwnProperty.call(err, 'metadata')) {
+            if (!Object.prototype.hasOwnProperty.call(err, 'metadata') && metadata) {
                 err.metadata = metadata;
             }
             this.sendError(err);
@@ -9805,34 +10730,44 @@ class Http2ServerCallStream extends events_1.EventEmitter {
             this.sendStatus({ code: constants_1.Status.OK, details: 'OK', metadata });
         }
         catch (err) {
-            err.code = constants_1.Status.INTERNAL;
-            this.sendError(err);
+            this.sendError({
+                details: (0, error_1.getErrorMessage)(err),
+                code: constants_1.Status.INTERNAL,
+            });
         }
     }
     sendStatus(statusObj) {
-        var _a;
+        var _a, _b;
         this.emit('callEnd', statusObj.code);
         this.emit('streamEnd', statusObj.code === constants_1.Status.OK);
         if (this.checkCancelled()) {
             return;
         }
-        trace('Request to method ' + ((_a = this.handler) === null || _a === void 0 ? void 0 : _a.path) +
+        trace('Request to method ' +
+            ((_a = this.handler) === null || _a === void 0 ? void 0 : _a.path) +
             ' ended with status code: ' +
             constants_1.Status[statusObj.code] +
             ' details: ' +
             statusObj.details);
-        clearTimeout(this.deadlineTimer);
-        if (!this.wantTrailers) {
-            this.wantTrailers = true;
-            this.stream.once('wantTrailers', () => {
-                const trailersToSend = Object.assign({
-                    [GRPC_STATUS_HEADER]: statusObj.code,
-                    [GRPC_MESSAGE_HEADER]: encodeURI(statusObj.details),
-                }, statusObj.metadata.toHttp2Headers());
-                this.stream.sendTrailers(trailersToSend);
-            });
-            this.sendMetadata();
-            this.stream.end();
+        if (this.deadlineTimer)
+            clearTimeout(this.deadlineTimer);
+        if (this.stream.headersSent) {
+            if (!this.wantTrailers) {
+                this.wantTrailers = true;
+                this.stream.once('wantTrailers', () => {
+                    var _a;
+                    const trailersToSend = Object.assign({ [GRPC_STATUS_HEADER]: statusObj.code, [GRPC_MESSAGE_HEADER]: encodeURI(statusObj.details) }, (_a = statusObj.metadata) === null || _a === void 0 ? void 0 : _a.toHttp2Headers());
+                    this.stream.sendTrailers(trailersToSend);
+                    this.statusSent = true;
+                });
+                this.stream.end();
+            }
+        }
+        else {
+            // Trailers-only response
+            const trailersToSend = Object.assign(Object.assign({ [GRPC_STATUS_HEADER]: statusObj.code, [GRPC_MESSAGE_HEADER]: encodeURI(statusObj.details) }, defaultResponseHeaders), (_b = statusObj.metadata) === null || _b === void 0 ? void 0 : _b.toHttp2Headers());
+            this.stream.respond(trailersToSend, { endStream: true });
+            this.statusSent = true;
         }
     }
     sendError(error) {
@@ -9841,7 +10776,7 @@ class Http2ServerCallStream extends events_1.EventEmitter {
             details: 'message' in error ? error.message : 'Unknown Error',
             metadata: 'metadata' in error && error.metadata !== undefined
                 ? error.metadata
-                : new metadata_1.Metadata(),
+                : null,
         };
         if ('code' in error &&
             typeof error.code === 'number' &&
@@ -9873,20 +10808,21 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         this.stream.resume();
     }
     setupSurfaceCall(call) {
-        this.once('cancelled', (reason) => {
+        this.once('cancelled', reason => {
             call.cancelled = true;
             call.emit('cancelled', reason);
         });
+        this.once('callEnd', status => call.emit('callEnd', status));
     }
     setupReadable(readable, encoding) {
         const decoder = new stream_decoder_1.StreamDecoder();
         let readsDone = false;
         let pendingMessageProcessing = false;
         let pushedEnd = false;
-        const maybePushEnd = () => {
+        const maybePushEnd = async () => {
             if (!pushedEnd && readsDone && !pendingMessageProcessing) {
                 pushedEnd = true;
-                this.pushOrBufferMessage(readable, null);
+                await this.pushOrBufferMessage(readable, null);
             }
         };
         this.stream.on('data', async (data) => {
@@ -9910,15 +10846,15 @@ class Http2ServerCallStream extends events_1.EventEmitter {
                 // Just return early
                 if (!decompressedMessage)
                     return;
-                this.pushOrBufferMessage(readable, decompressedMessage);
+                await this.pushOrBufferMessage(readable, decompressedMessage);
             }
             pendingMessageProcessing = false;
             this.stream.resume();
-            maybePushEnd();
+            await maybePushEnd();
         });
-        this.stream.once('end', () => {
+        this.stream.once('end', async () => {
             readsDone = true;
-            maybePushEnd();
+            await maybePushEnd();
         });
     }
     consumeUnpushedMessages(readable) {
@@ -9933,12 +10869,12 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         }
         return this.canPush;
     }
-    pushOrBufferMessage(readable, messageBytes) {
+    async pushOrBufferMessage(readable, messageBytes) {
         if (this.isPushPending) {
             this.bufferedMessages.push(messageBytes);
         }
         else {
-            this.pushMessage(readable, messageBytes);
+            await this.pushMessage(readable, messageBytes);
         }
     }
     async pushMessage(readable, messageBytes) {
@@ -9969,24 +10905,24 @@ class Http2ServerCallStream extends events_1.EventEmitter {
         catch (error) {
             // Ignore any remaining messages when errors occur.
             this.bufferedMessages.length = 0;
-            if (!('code' in error &&
-                typeof error.code === 'number' &&
-                Number.isInteger(error.code) &&
-                error.code >= constants_1.Status.OK &&
-                error.code <= constants_1.Status.UNAUTHENTICATED)) {
-                // The error code is not a valid gRPC code so its being overwritten.
-                error.code = constants_1.Status.INTERNAL;
+            let code = (0, error_1.getErrorCode)(error);
+            if (code === null || code < constants_1.Status.OK || code > constants_1.Status.UNAUTHENTICATED) {
+                code = constants_1.Status.INTERNAL;
             }
-            readable.emit('error', error);
+            readable.emit('error', {
+                details: (0, error_1.getErrorMessage)(error),
+                code: code,
+            });
         }
         this.isPushPending = false;
         if (this.bufferedMessages.length > 0) {
-            this.pushMessage(readable, this.bufferedMessages.shift());
+            await this.pushMessage(readable, this.bufferedMessages.shift());
         }
     }
     getPeer() {
-        const socket = this.stream.session.socket;
-        if (socket.remoteAddress) {
+        var _a;
+        const socket = (_a = this.stream.session) === null || _a === void 0 ? void 0 : _a.socket;
+        if (socket === null || socket === void 0 ? void 0 : socket.remoteAddress) {
             if (socket.remotePort) {
                 return `${socket.remoteAddress}:${socket.remotePort}`;
             }
@@ -10000,6 +10936,9 @@ class Http2ServerCallStream extends events_1.EventEmitter {
     }
     getDeadline() {
         return this.deadline;
+    }
+    getPath() {
+        return this.handler.path;
     }
 }
 exports.Http2ServerCallStream = Http2ServerCallStream;
@@ -10069,7 +11008,7 @@ class ServerCredentials {
             key.push(pair.private_key);
         }
         return new SecureServerCredentials({
-            ca: rootCerts || tls_helpers_1.getDefaultRootsData() || undefined,
+            ca: rootCerts || (0, tls_helpers_1.getDefaultRootsData)() || undefined,
             cert,
             key,
             requestCert: checkClientCertificate,
@@ -10127,7 +11066,6 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Server = void 0;
 const http2 = __nccwpck_require__(5158);
 const constants_1 = __nccwpck_require__(634);
-const metadata_1 = __nccwpck_require__(3665);
 const server_call_1 = __nccwpck_require__(2533);
 const server_credentials_1 = __nccwpck_require__(3828);
 const resolver_1 = __nccwpck_require__(1594);
@@ -10135,13 +11073,16 @@ const logging = __nccwpck_require__(5993);
 const subchannel_address_1 = __nccwpck_require__(9905);
 const uri_parser_1 = __nccwpck_require__(5974);
 const channelz_1 = __nccwpck_require__(9975);
+const UNLIMITED_CONNECTION_AGE_MS = ~(1 << 31);
+const KEEPALIVE_MAX_TIME_MS = ~(1 << 31);
+const KEEPALIVE_TIMEOUT_MS = 20000;
+const { HTTP2_HEADER_PATH } = http2.constants;
 const TRACER_NAME = 'server';
 function noop() { }
 function getUnimplementedStatusResponse(methodName) {
     return {
         code: constants_1.Status.UNIMPLEMENTED,
         details: `The server does not implement the method ${methodName}`,
-        metadata: new metadata_1.Metadata(),
     };
 }
 function getDefaultHandler(handlerType, methodName) {
@@ -10169,10 +11110,12 @@ function getDefaultHandler(handlerType, methodName) {
 }
 class Server {
     constructor(options) {
+        var _a, _b, _c, _d;
         this.http2ServerList = [];
         this.handlers = new Map();
         this.sessions = new Map();
         this.started = false;
+        this.serverAddressString = 'null';
         // Channelz Info
         this.channelzEnabled = true;
         this.channelzTrace = new channelz_1.ChannelzTrace();
@@ -10183,25 +11126,26 @@ class Server {
         if (this.options['grpc.enable_channelz'] === 0) {
             this.channelzEnabled = false;
         }
+        this.channelzRef = (0, channelz_1.registerChannelzServer)(() => this.getChannelzInfo(), this.channelzEnabled);
         if (this.channelzEnabled) {
-            this.channelzRef = channelz_1.registerChannelzServer(() => this.getChannelzInfo());
             this.channelzTrace.addTrace('CT_INFO', 'Server created');
-            this.trace('Server constructed');
         }
-        else {
-            // Dummy channelz ref that will never be used
-            this.channelzRef = {
-                kind: 'server',
-                id: -1
-            };
-        }
+        this.maxConnectionAgeMs =
+            (_a = this.options['grpc.max_connection_age_ms']) !== null && _a !== void 0 ? _a : UNLIMITED_CONNECTION_AGE_MS;
+        this.maxConnectionAgeGraceMs =
+            (_b = this.options['grpc.max_connection_age_grace_ms']) !== null && _b !== void 0 ? _b : UNLIMITED_CONNECTION_AGE_MS;
+        this.keepaliveTimeMs =
+            (_c = this.options['grpc.keepalive_time_ms']) !== null && _c !== void 0 ? _c : KEEPALIVE_MAX_TIME_MS;
+        this.keepaliveTimeoutMs =
+            (_d = this.options['grpc.keepalive_timeout_ms']) !== null && _d !== void 0 ? _d : KEEPALIVE_TIMEOUT_MS;
+        this.trace('Server constructed');
     }
     getChannelzInfo() {
         return {
             trace: this.channelzTrace,
             callTracker: this.callTracker,
             listenerChildren: this.listenerChildrenTracker.getChildLists(),
-            sessionChildren: this.sessionChildrenTracker.getChildLists()
+            sessionChildren: this.sessionChildrenTracker.getChildLists(),
         };
     }
     getChannelzSessionInfoGetter(session) {
@@ -10209,8 +11153,12 @@ class Server {
             var _a, _b, _c;
             const sessionInfo = this.sessions.get(session);
             const sessionSocket = session.socket;
-            const remoteAddress = sessionSocket.remoteAddress ? subchannel_address_1.stringToSubchannelAddress(sessionSocket.remoteAddress, sessionSocket.remotePort) : null;
-            const localAddress = sessionSocket.localAddress ? subchannel_address_1.stringToSubchannelAddress(sessionSocket.localAddress, sessionSocket.localPort) : null;
+            const remoteAddress = sessionSocket.remoteAddress
+                ? (0, subchannel_address_1.stringToSubchannelAddress)(sessionSocket.remoteAddress, sessionSocket.remotePort)
+                : null;
+            const localAddress = sessionSocket.localAddress
+                ? (0, subchannel_address_1.stringToSubchannelAddress)(sessionSocket.localAddress, sessionSocket.localPort)
+                : null;
             let tlsInfo;
             if (session.encrypted) {
                 const tlsSocket = sessionSocket;
@@ -10219,9 +11167,13 @@ class Server {
                 const peerCertificate = tlsSocket.getPeerCertificate();
                 tlsInfo = {
                     cipherSuiteStandardName: (_a = cipherInfo.standardName) !== null && _a !== void 0 ? _a : null,
-                    cipherSuiteOtherName: cipherInfo.standardName ? null : cipherInfo.name,
-                    localCertificate: (certificate && 'raw' in certificate) ? certificate.raw : null,
-                    remoteCertificate: (peerCertificate && 'raw' in peerCertificate) ? peerCertificate.raw : null
+                    cipherSuiteOtherName: cipherInfo.standardName
+                        ? null
+                        : cipherInfo.name,
+                    localCertificate: certificate && 'raw' in certificate ? certificate.raw : null,
+                    remoteCertificate: peerCertificate && 'raw' in peerCertificate
+                        ? peerCertificate.raw
+                        : null,
                 };
             }
             else {
@@ -10243,7 +11195,7 @@ class Server {
                 lastMessageSentTimestamp: sessionInfo.lastMessageSentTimestamp,
                 lastMessageReceivedTimestamp: sessionInfo.lastMessageReceivedTimestamp,
                 localFlowControlWindow: (_b = session.state.localWindowSize) !== null && _b !== void 0 ? _b : null,
-                remoteFlowControlWindow: (_c = session.state.remoteWindowSize) !== null && _c !== void 0 ? _c : null
+                remoteFlowControlWindow: (_c = session.state.remoteWindowSize) !== null && _c !== void 0 ? _c : null,
             };
             return socketInfo;
         };
@@ -10265,7 +11217,7 @@ class Server {
         if (serviceKeys.length === 0) {
             throw new Error('Cannot add an empty service to a server');
         }
-        serviceKeys.forEach((name) => {
+        serviceKeys.forEach(name => {
             const attrs = service[name];
             let methodType;
             if (attrs.requestStream) {
@@ -10306,7 +11258,7 @@ class Server {
             throw new Error('removeService() requires object as argument');
         }
         const serviceKeys = Object.keys(service);
-        serviceKeys.forEach((name) => {
+        serviceKeys.forEach(name => {
             const attrs = service[name];
             this.unregister(attrs.path);
         });
@@ -10327,11 +11279,11 @@ class Server {
         if (typeof callback !== 'function') {
             throw new TypeError('callback must be a function');
         }
-        const initialPortUri = uri_parser_1.parseUri(port);
+        const initialPortUri = (0, uri_parser_1.parseUri)(port);
         if (initialPortUri === null) {
             throw new Error(`Could not parse port "${port}"`);
         }
-        const portUri = resolver_1.mapUriDefaultScheme(initialPortUri);
+        const portUri = (0, resolver_1.mapUriDefaultScheme)(initialPortUri);
         if (portUri === null) {
             throw new Error(`Could not get a default scheme for port "${port}"`);
         }
@@ -10339,7 +11291,15 @@ class Server {
             maxSendHeaderBlockLength: Number.MAX_SAFE_INTEGER,
         };
         if ('grpc-node.max_session_memory' in this.options) {
-            serverOptions.maxSessionMemory = this.options['grpc-node.max_session_memory'];
+            serverOptions.maxSessionMemory =
+                this.options['grpc-node.max_session_memory'];
+        }
+        else {
+            /* By default, set a very large max session memory limit, to effectively
+             * disable enforcement of the limit. Some testing indicates that Node's
+             * behavior degrades badly when this limit is reached, so we solve that
+             * by disabling the check entirely. */
+            serverOptions.maxSessionMemory = Number.MAX_SAFE_INTEGER;
         }
         if ('grpc.max_concurrent_streams' in this.options) {
             serverOptions.settings = {
@@ -10353,6 +11313,8 @@ class Server {
             let http2Server;
             if (creds._isSecure()) {
                 const secureServerOptions = Object.assign(serverOptions, creds._getSettings());
+                secureServerOptions.enableTrace =
+                    this.options['grpc-node.tls_enable_trace'] === 1;
                 http2Server = http2.createSecureServer(secureServerOptions);
                 http2Server.on('secureConnection', (socket) => {
                     /* These errors need to be handled by the user of Http2SecureServer,
@@ -10373,10 +11335,10 @@ class Server {
             if (addressList.length === 0) {
                 return Promise.resolve({ port: portNum, count: previousCount });
             }
-            return Promise.all(addressList.map((address) => {
-                this.trace('Attempting to bind ' + subchannel_address_1.subchannelAddressToString(address));
+            return Promise.all(addressList.map(address => {
+                this.trace('Attempting to bind ' + (0, subchannel_address_1.subchannelAddressToString)(address));
                 let addr;
-                if (subchannel_address_1.isTcpSubchannelAddress(address)) {
+                if ((0, subchannel_address_1.isTcpSubchannelAddress)(address)) {
                     addr = {
                         host: address.host,
                         port: portNum,
@@ -10388,7 +11350,10 @@ class Server {
                 const http2Server = setupServer();
                 return new Promise((resolve, reject) => {
                     const onError = (err) => {
-                        this.trace('Failed to bind ' + subchannel_address_1.subchannelAddressToString(address) + ' with error ' + err.message);
+                        this.trace('Failed to bind ' +
+                            (0, subchannel_address_1.subchannelAddressToString)(address) +
+                            ' with error ' +
+                            err.message);
                         resolve(err);
                     };
                     http2Server.once('error', onError);
@@ -10397,53 +11362,51 @@ class Server {
                         let boundSubchannelAddress;
                         if (typeof boundAddress === 'string') {
                             boundSubchannelAddress = {
-                                path: boundAddress
+                                path: boundAddress,
                             };
                         }
                         else {
                             boundSubchannelAddress = {
                                 host: boundAddress.address,
-                                port: boundAddress.port
+                                port: boundAddress.port,
                             };
                         }
-                        let channelzRef;
+                        const channelzRef = (0, channelz_1.registerChannelzSocket)((0, subchannel_address_1.subchannelAddressToString)(boundSubchannelAddress), () => {
+                            return {
+                                localAddress: boundSubchannelAddress,
+                                remoteAddress: null,
+                                security: null,
+                                remoteName: null,
+                                streamsStarted: 0,
+                                streamsSucceeded: 0,
+                                streamsFailed: 0,
+                                messagesSent: 0,
+                                messagesReceived: 0,
+                                keepAlivesSent: 0,
+                                lastLocalStreamCreatedTimestamp: null,
+                                lastRemoteStreamCreatedTimestamp: null,
+                                lastMessageSentTimestamp: null,
+                                lastMessageReceivedTimestamp: null,
+                                localFlowControlWindow: null,
+                                remoteFlowControlWindow: null,
+                            };
+                        }, this.channelzEnabled);
                         if (this.channelzEnabled) {
-                            channelzRef = channelz_1.registerChannelzSocket(subchannel_address_1.subchannelAddressToString(boundSubchannelAddress), () => {
-                                return {
-                                    localAddress: boundSubchannelAddress,
-                                    remoteAddress: null,
-                                    security: null,
-                                    remoteName: null,
-                                    streamsStarted: 0,
-                                    streamsSucceeded: 0,
-                                    streamsFailed: 0,
-                                    messagesSent: 0,
-                                    messagesReceived: 0,
-                                    keepAlivesSent: 0,
-                                    lastLocalStreamCreatedTimestamp: null,
-                                    lastRemoteStreamCreatedTimestamp: null,
-                                    lastMessageSentTimestamp: null,
-                                    lastMessageReceivedTimestamp: null,
-                                    localFlowControlWindow: null,
-                                    remoteFlowControlWindow: null
-                                };
-                            });
                             this.listenerChildrenTracker.refChild(channelzRef);
                         }
-                        else {
-                            channelzRef = {
-                                kind: 'socket',
-                                id: -1,
-                                name: ''
-                            };
-                        }
-                        this.http2ServerList.push({ server: http2Server, channelzRef: channelzRef });
-                        this.trace('Successfully bound ' + subchannel_address_1.subchannelAddressToString(boundSubchannelAddress));
-                        resolve('port' in boundSubchannelAddress ? boundSubchannelAddress.port : portNum);
+                        this.http2ServerList.push({
+                            server: http2Server,
+                            channelzRef: channelzRef,
+                        });
+                        this.trace('Successfully bound ' +
+                            (0, subchannel_address_1.subchannelAddressToString)(boundSubchannelAddress));
+                        resolve('port' in boundSubchannelAddress
+                            ? boundSubchannelAddress.port
+                            : portNum);
                         http2Server.removeListener('error', onError);
                     });
                 });
-            })).then((results) => {
+            })).then(results => {
                 let count = 0;
                 for (const result of results) {
                     if (typeof result === 'number') {
@@ -10467,7 +11430,10 @@ class Server {
             const http2Server = setupServer();
             return new Promise((resolve, reject) => {
                 const onError = (err) => {
-                    this.trace('Failed to bind ' + subchannel_address_1.subchannelAddressToString(address) + ' with error ' + err.message);
+                    this.trace('Failed to bind ' +
+                        (0, subchannel_address_1.subchannelAddressToString)(address) +
+                        ' with error ' +
+                        err.message);
                     resolve(bindWildcardPort(addressList.slice(1)));
                 };
                 http2Server.once('error', onError);
@@ -10475,41 +11441,37 @@ class Server {
                     const boundAddress = http2Server.address();
                     const boundSubchannelAddress = {
                         host: boundAddress.address,
-                        port: boundAddress.port
+                        port: boundAddress.port,
                     };
-                    let channelzRef;
+                    const channelzRef = (0, channelz_1.registerChannelzSocket)((0, subchannel_address_1.subchannelAddressToString)(boundSubchannelAddress), () => {
+                        return {
+                            localAddress: boundSubchannelAddress,
+                            remoteAddress: null,
+                            security: null,
+                            remoteName: null,
+                            streamsStarted: 0,
+                            streamsSucceeded: 0,
+                            streamsFailed: 0,
+                            messagesSent: 0,
+                            messagesReceived: 0,
+                            keepAlivesSent: 0,
+                            lastLocalStreamCreatedTimestamp: null,
+                            lastRemoteStreamCreatedTimestamp: null,
+                            lastMessageSentTimestamp: null,
+                            lastMessageReceivedTimestamp: null,
+                            localFlowControlWindow: null,
+                            remoteFlowControlWindow: null,
+                        };
+                    }, this.channelzEnabled);
                     if (this.channelzEnabled) {
-                        channelzRef = channelz_1.registerChannelzSocket(subchannel_address_1.subchannelAddressToString(boundSubchannelAddress), () => {
-                            return {
-                                localAddress: boundSubchannelAddress,
-                                remoteAddress: null,
-                                security: null,
-                                remoteName: null,
-                                streamsStarted: 0,
-                                streamsSucceeded: 0,
-                                streamsFailed: 0,
-                                messagesSent: 0,
-                                messagesReceived: 0,
-                                keepAlivesSent: 0,
-                                lastLocalStreamCreatedTimestamp: null,
-                                lastRemoteStreamCreatedTimestamp: null,
-                                lastMessageSentTimestamp: null,
-                                lastMessageReceivedTimestamp: null,
-                                localFlowControlWindow: null,
-                                remoteFlowControlWindow: null
-                            };
-                        });
                         this.listenerChildrenTracker.refChild(channelzRef);
                     }
-                    else {
-                        channelzRef = {
-                            kind: 'socket',
-                            id: -1,
-                            name: ''
-                        };
-                    }
-                    this.http2ServerList.push({ server: http2Server, channelzRef: channelzRef });
-                    this.trace('Successfully bound ' + subchannel_address_1.subchannelAddressToString(boundSubchannelAddress));
+                    this.http2ServerList.push({
+                        server: http2Server,
+                        channelzRef: channelzRef,
+                    });
+                    this.trace('Successfully bound ' +
+                        (0, subchannel_address_1.subchannelAddressToString)(boundSubchannelAddress));
                     resolve(bindSpecificPort(addressList.slice(1), boundAddress.port, 1));
                     http2Server.removeListener('error', onError);
                 });
@@ -10524,7 +11486,7 @@ class Server {
                     return;
                 }
                 let bindResultPromise;
-                if (subchannel_address_1.isTcpSubchannelAddress(addressList[0])) {
+                if ((0, subchannel_address_1.isTcpSubchannelAddress)(addressList[0])) {
                     if (addressList[0].port === 0) {
                         bindResultPromise = bindWildcardPort(addressList);
                     }
@@ -10536,7 +11498,7 @@ class Server {
                     // Use an arbitrary non-zero port for non-TCP addresses
                     bindResultPromise = bindSpecificPort(addressList, 1, 0);
                 }
-                bindResultPromise.then((bindResult) => {
+                bindResultPromise.then(bindResult => {
                     if (bindResult.count === 0) {
                         const errorString = `No address added out of total ${addressList.length} resolved`;
                         logging.log(constants_1.LogVerbosity.ERROR, errorString);
@@ -10548,27 +11510,28 @@ class Server {
                         }
                         deferredCallback(null, bindResult.port);
                     }
-                }, (error) => {
+                }, error => {
                     const errorString = `No address added out of total ${addressList.length} resolved`;
                     logging.log(constants_1.LogVerbosity.ERROR, errorString);
                     deferredCallback(new Error(errorString), 0);
                 });
             },
-            onError: (error) => {
+            onError: error => {
                 deferredCallback(new Error(error.details), 0);
             },
         };
-        const resolver = resolver_1.createResolver(portUri, resolverListener, this.options);
+        const resolver = (0, resolver_1.createResolver)(portUri, resolverListener, this.options);
         resolver.updateResolution();
     }
     forceShutdown() {
         // Close the server if it is still running.
-        for (const { server: http2Server, channelzRef: ref } of this.http2ServerList) {
+        for (const { server: http2Server, channelzRef: ref } of this
+            .http2ServerList) {
             if (http2Server.listening) {
                 http2Server.close(() => {
                     if (this.channelzEnabled) {
                         this.listenerChildrenTracker.unrefChild(ref);
-                        channelz_1.unregisterChannelzRef(ref);
+                        (0, channelz_1.unregisterChannelzRef)(ref);
                     }
                 });
             }
@@ -10584,7 +11547,7 @@ class Server {
         });
         this.sessions.clear();
         if (this.channelzEnabled) {
-            channelz_1.unregisterChannelzRef(this.channelzRef);
+            (0, channelz_1.unregisterChannelzRef)(this.channelzRef);
         }
     }
     register(name, handler, serialize, deserialize, type) {
@@ -10619,7 +11582,7 @@ class Server {
     tryShutdown(callback) {
         const wrappedCallback = (error) => {
             if (this.channelzEnabled) {
-                channelz_1.unregisterChannelzRef(this.channelzRef);
+                (0, channelz_1.unregisterChannelzRef)(this.channelzRef);
             }
             callback(error);
         };
@@ -10632,13 +11595,14 @@ class Server {
         }
         // Close the server if necessary.
         this.started = false;
-        for (const { server: http2Server, channelzRef: ref } of this.http2ServerList) {
+        for (const { server: http2Server, channelzRef: ref } of this
+            .http2ServerList) {
             if (http2Server.listening) {
                 pendingChecks++;
                 http2Server.close(() => {
                     if (this.channelzEnabled) {
                         this.listenerChildrenTracker.unrefChild(ref);
-                        channelz_1.unregisterChannelzRef(ref);
+                        (0, channelz_1.unregisterChannelzRef)(ref);
                     }
                     maybeCallback();
                 });
@@ -10665,139 +11629,167 @@ class Server {
     getChannelzRef() {
         return this.channelzRef;
     }
+    _verifyContentType(stream, headers) {
+        const contentType = headers[http2.constants.HTTP2_HEADER_CONTENT_TYPE];
+        if (typeof contentType !== 'string' ||
+            !contentType.startsWith('application/grpc')) {
+            stream.respond({
+                [http2.constants.HTTP2_HEADER_STATUS]: http2.constants.HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE,
+            }, { endStream: true });
+            return false;
+        }
+        return true;
+    }
+    _retrieveHandler(path) {
+        this.trace('Received call to method ' +
+            path +
+            ' at address ' +
+            this.serverAddressString);
+        const handler = this.handlers.get(path);
+        if (handler === undefined) {
+            this.trace('No handler registered for method ' +
+                path +
+                '. Sending UNIMPLEMENTED status.');
+            return null;
+        }
+        return handler;
+    }
+    _respondWithError(err, stream, channelzSessionInfo = null) {
+        const call = new server_call_1.Http2ServerCallStream(stream, null, this.options);
+        if (err.code === undefined) {
+            err.code = constants_1.Status.INTERNAL;
+        }
+        if (this.channelzEnabled) {
+            this.callTracker.addCallFailed();
+            channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallFailed();
+        }
+        call.sendError(err);
+    }
+    _channelzHandler(stream, headers) {
+        const channelzSessionInfo = this.sessions.get(stream.session);
+        this.callTracker.addCallStarted();
+        channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallStarted();
+        if (!this._verifyContentType(stream, headers)) {
+            this.callTracker.addCallFailed();
+            channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallFailed();
+            return;
+        }
+        const path = headers[HTTP2_HEADER_PATH];
+        const handler = this._retrieveHandler(path);
+        if (!handler) {
+            this._respondWithError(getUnimplementedStatusResponse(path), stream, channelzSessionInfo);
+            return;
+        }
+        const call = new server_call_1.Http2ServerCallStream(stream, handler, this.options);
+        call.once('callEnd', (code) => {
+            if (code === constants_1.Status.OK) {
+                this.callTracker.addCallSucceeded();
+            }
+            else {
+                this.callTracker.addCallFailed();
+            }
+        });
+        if (channelzSessionInfo) {
+            call.once('streamEnd', (success) => {
+                if (success) {
+                    channelzSessionInfo.streamTracker.addCallSucceeded();
+                }
+                else {
+                    channelzSessionInfo.streamTracker.addCallFailed();
+                }
+            });
+            call.on('sendMessage', () => {
+                channelzSessionInfo.messagesSent += 1;
+                channelzSessionInfo.lastMessageSentTimestamp = new Date();
+            });
+            call.on('receiveMessage', () => {
+                channelzSessionInfo.messagesReceived += 1;
+                channelzSessionInfo.lastMessageReceivedTimestamp = new Date();
+            });
+        }
+        if (!this._runHandlerForCall(call, handler, headers)) {
+            this.callTracker.addCallFailed();
+            channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallFailed();
+            call.sendError({
+                code: constants_1.Status.INTERNAL,
+                details: `Unknown handler type: ${handler.type}`,
+            });
+        }
+    }
+    _streamHandler(stream, headers) {
+        if (this._verifyContentType(stream, headers) !== true) {
+            return;
+        }
+        const path = headers[HTTP2_HEADER_PATH];
+        const handler = this._retrieveHandler(path);
+        if (!handler) {
+            this._respondWithError(getUnimplementedStatusResponse(path), stream, null);
+            return;
+        }
+        const call = new server_call_1.Http2ServerCallStream(stream, handler, this.options);
+        if (!this._runHandlerForCall(call, handler, headers)) {
+            call.sendError({
+                code: constants_1.Status.INTERNAL,
+                details: `Unknown handler type: ${handler.type}`,
+            });
+        }
+    }
+    _runHandlerForCall(call, handler, headers) {
+        var _a;
+        const metadata = call.receiveMetadata(headers);
+        const encoding = (_a = metadata.get('grpc-encoding')[0]) !== null && _a !== void 0 ? _a : 'identity';
+        metadata.remove('grpc-encoding');
+        const { type } = handler;
+        if (type === 'unary') {
+            handleUnary(call, handler, metadata, encoding);
+        }
+        else if (type === 'clientStream') {
+            handleClientStreaming(call, handler, metadata, encoding);
+        }
+        else if (type === 'serverStream') {
+            handleServerStreaming(call, handler, metadata, encoding);
+        }
+        else if (type === 'bidi') {
+            handleBidiStreaming(call, handler, metadata, encoding);
+        }
+        else {
+            return false;
+        }
+        return true;
+    }
     _setupHandlers(http2Server) {
         if (http2Server === null) {
             return;
         }
-        http2Server.on('stream', (stream, headers) => {
-            var _a;
-            const channelzSessionInfo = this.sessions.get(stream.session);
-            if (this.channelzEnabled) {
-                this.callTracker.addCallStarted();
-                channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallStarted();
+        const serverAddress = http2Server.address();
+        let serverAddressString = 'null';
+        if (serverAddress) {
+            if (typeof serverAddress === 'string') {
+                serverAddressString = serverAddress;
             }
-            const contentType = headers[http2.constants.HTTP2_HEADER_CONTENT_TYPE];
-            if (typeof contentType !== 'string' ||
-                !contentType.startsWith('application/grpc')) {
-                stream.respond({
-                    [http2.constants.HTTP2_HEADER_STATUS]: http2.constants.HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE,
-                }, { endStream: true });
-                this.callTracker.addCallFailed();
-                if (this.channelzEnabled) {
-                    channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallFailed();
-                }
-                return;
+            else {
+                serverAddressString = serverAddress.address + ':' + serverAddress.port;
             }
-            let call = null;
-            try {
-                const path = headers[http2.constants.HTTP2_HEADER_PATH];
-                const serverAddress = http2Server.address();
-                let serverAddressString = 'null';
-                if (serverAddress) {
-                    if (typeof serverAddress === 'string') {
-                        serverAddressString = serverAddress;
-                    }
-                    else {
-                        serverAddressString =
-                            serverAddress.address + ':' + serverAddress.port;
-                    }
-                }
-                this.trace('Received call to method ' +
-                    path +
-                    ' at address ' +
-                    serverAddressString);
-                const handler = this.handlers.get(path);
-                if (handler === undefined) {
-                    this.trace('No handler registered for method ' +
-                        path +
-                        '. Sending UNIMPLEMENTED status.');
-                    throw getUnimplementedStatusResponse(path);
-                }
-                call = new server_call_1.Http2ServerCallStream(stream, handler, this.options);
-                call.once('callEnd', (code) => {
-                    if (code === constants_1.Status.OK) {
-                        this.callTracker.addCallSucceeded();
-                    }
-                    else {
-                        this.callTracker.addCallFailed();
-                    }
-                });
-                if (this.channelzEnabled && channelzSessionInfo) {
-                    call.once('streamEnd', (success) => {
-                        if (success) {
-                            channelzSessionInfo.streamTracker.addCallSucceeded();
-                        }
-                        else {
-                            channelzSessionInfo.streamTracker.addCallFailed();
-                        }
-                    });
-                    call.on('sendMessage', () => {
-                        channelzSessionInfo.messagesSent += 1;
-                        channelzSessionInfo.lastMessageSentTimestamp = new Date();
-                    });
-                    call.on('receiveMessage', () => {
-                        channelzSessionInfo.messagesReceived += 1;
-                        channelzSessionInfo.lastMessageReceivedTimestamp = new Date();
-                    });
-                }
-                const metadata = call.receiveMetadata(headers);
-                const encoding = (_a = metadata.get('grpc-encoding')[0]) !== null && _a !== void 0 ? _a : 'identity';
-                metadata.remove('grpc-encoding');
-                switch (handler.type) {
-                    case 'unary':
-                        handleUnary(call, handler, metadata, encoding);
-                        break;
-                    case 'clientStream':
-                        handleClientStreaming(call, handler, metadata, encoding);
-                        break;
-                    case 'serverStream':
-                        handleServerStreaming(call, handler, metadata, encoding);
-                        break;
-                    case 'bidi':
-                        handleBidiStreaming(call, handler, metadata, encoding);
-                        break;
-                    default:
-                        throw new Error(`Unknown handler type: ${handler.type}`);
-                }
-            }
-            catch (err) {
-                if (!call) {
-                    call = new server_call_1.Http2ServerCallStream(stream, null, this.options);
-                    if (this.channelzEnabled) {
-                        this.callTracker.addCallFailed();
-                        channelzSessionInfo === null || channelzSessionInfo === void 0 ? void 0 : channelzSessionInfo.streamTracker.addCallFailed();
-                    }
-                }
-                if (err.code === undefined) {
-                    err.code = constants_1.Status.INTERNAL;
-                }
-                call.sendError(err);
-            }
-        });
-        http2Server.on('session', (session) => {
-            var _a;
+        }
+        this.serverAddressString = serverAddressString;
+        const handler = this.channelzEnabled
+            ? this._channelzHandler
+            : this._streamHandler;
+        http2Server.on('stream', handler.bind(this));
+        http2Server.on('session', session => {
+            var _a, _b, _c, _d, _e;
             if (!this.started) {
                 session.destroy();
                 return;
             }
-            let channelzRef;
-            if (this.channelzEnabled) {
-                channelzRef = channelz_1.registerChannelzSocket((_a = session.socket.remoteAddress) !== null && _a !== void 0 ? _a : 'unknown', this.getChannelzSessionInfoGetter(session));
-            }
-            else {
-                channelzRef = {
-                    kind: 'socket',
-                    id: -1,
-                    name: ''
-                };
-            }
+            const channelzRef = (0, channelz_1.registerChannelzSocket)((_a = session.socket.remoteAddress) !== null && _a !== void 0 ? _a : 'unknown', this.getChannelzSessionInfoGetter(session), this.channelzEnabled);
             const channelzSessionInfo = {
                 ref: channelzRef,
                 streamTracker: new channelz_1.ChannelzCallTracker(),
                 messagesSent: 0,
                 messagesReceived: 0,
                 lastMessageSentTimestamp: null,
-                lastMessageReceivedTimestamp: null
+                lastMessageReceivedTimestamp: null,
             };
             this.sessions.set(session, channelzSessionInfo);
             const clientAddress = session.socket.remoteAddress;
@@ -10805,11 +11797,72 @@ class Server {
                 this.channelzTrace.addTrace('CT_INFO', 'Connection established by client ' + clientAddress);
                 this.sessionChildrenTracker.refChild(channelzRef);
             }
+            let connectionAgeTimer = null;
+            let connectionAgeGraceTimer = null;
+            let sessionClosedByServer = false;
+            if (this.maxConnectionAgeMs !== UNLIMITED_CONNECTION_AGE_MS) {
+                // Apply a random jitter within a +/-10% range
+                const jitterMagnitude = this.maxConnectionAgeMs / 10;
+                const jitter = Math.random() * jitterMagnitude * 2 - jitterMagnitude;
+                connectionAgeTimer = (_c = (_b = setTimeout(() => {
+                    var _a, _b;
+                    sessionClosedByServer = true;
+                    if (this.channelzEnabled) {
+                        this.channelzTrace.addTrace('CT_INFO', 'Connection dropped by max connection age from ' + clientAddress);
+                    }
+                    try {
+                        session.goaway(http2.constants.NGHTTP2_NO_ERROR, ~(1 << 31), Buffer.from('max_age'));
+                    }
+                    catch (e) {
+                        // The goaway can't be sent because the session is already closed
+                        session.destroy();
+                        return;
+                    }
+                    session.close();
+                    /* Allow a grace period after sending the GOAWAY before forcibly
+                     * closing the connection. */
+                    if (this.maxConnectionAgeGraceMs !== UNLIMITED_CONNECTION_AGE_MS) {
+                        connectionAgeGraceTimer = (_b = (_a = setTimeout(() => {
+                            session.destroy();
+                        }, this.maxConnectionAgeGraceMs)).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+                    }
+                }, this.maxConnectionAgeMs + jitter)).unref) === null || _c === void 0 ? void 0 : _c.call(_b);
+            }
+            const keeapliveTimeTimer = (_e = (_d = setInterval(() => {
+                var _a, _b;
+                const timeoutTImer = (_b = (_a = setTimeout(() => {
+                    sessionClosedByServer = true;
+                    if (this.channelzEnabled) {
+                        this.channelzTrace.addTrace('CT_INFO', 'Connection dropped by keepalive timeout from ' + clientAddress);
+                    }
+                    session.close();
+                }, this.keepaliveTimeoutMs)).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+                try {
+                    session.ping((err, duration, payload) => {
+                        clearTimeout(timeoutTImer);
+                    });
+                }
+                catch (e) {
+                    // The ping can't be sent because the session is already closed
+                    session.destroy();
+                }
+            }, this.keepaliveTimeMs)).unref) === null || _e === void 0 ? void 0 : _e.call(_d);
             session.on('close', () => {
                 if (this.channelzEnabled) {
-                    this.channelzTrace.addTrace('CT_INFO', 'Connection dropped by client ' + clientAddress);
+                    if (!sessionClosedByServer) {
+                        this.channelzTrace.addTrace('CT_INFO', 'Connection dropped by client ' + clientAddress);
+                    }
                     this.sessionChildrenTracker.unrefChild(channelzRef);
-                    channelz_1.unregisterChannelzRef(channelzRef);
+                    (0, channelz_1.unregisterChannelzRef)(channelzRef);
+                }
+                if (connectionAgeTimer) {
+                    clearTimeout(connectionAgeTimer);
+                }
+                if (connectionAgeGraceTimer) {
+                    clearTimeout(connectionAgeGraceTimer);
+                }
+                if (keeapliveTimeTimer) {
+                    clearTimeout(keeapliveTimeTimer);
                 }
                 this.sessions.delete(session);
             });
@@ -10818,14 +11871,19 @@ class Server {
 }
 exports.Server = Server;
 async function handleUnary(call, handler, metadata, encoding) {
-    const request = await call.receiveUnaryMessage(encoding);
-    if (request === undefined || call.cancelled) {
-        return;
+    try {
+        const request = await call.receiveUnaryMessage(encoding);
+        if (request === undefined || call.cancelled) {
+            return;
+        }
+        const emitter = new server_call_1.ServerUnaryCallImpl(call, metadata, request);
+        handler.func(emitter, (err, value, trailer, flags) => {
+            call.sendUnaryMessage(err, value, trailer, flags);
+        });
     }
-    const emitter = new server_call_1.ServerUnaryCallImpl(call, metadata, request);
-    handler.func(emitter, (err, value, trailer, flags) => {
-        call.sendUnaryMessage(err, value, trailer, flags);
-    });
+    catch (err) {
+        call.sendError(err);
+    }
 }
 function handleClientStreaming(call, handler, metadata, encoding) {
     const stream = new server_call_1.ServerReadableStreamImpl(call, metadata, handler.deserialize, encoding);
@@ -10840,12 +11898,17 @@ function handleClientStreaming(call, handler, metadata, encoding) {
     handler.func(stream, respond);
 }
 async function handleServerStreaming(call, handler, metadata, encoding) {
-    const request = await call.receiveUnaryMessage(encoding);
-    if (request === undefined || call.cancelled) {
-        return;
+    try {
+        const request = await call.receiveUnaryMessage(encoding);
+        if (request === undefined || call.cancelled) {
+            return;
+        }
+        const stream = new server_call_1.ServerWritableStreamImpl(call, metadata, handler.serialize, request);
+        handler.func(stream);
     }
-    const stream = new server_call_1.ServerWritableStreamImpl(call, metadata, handler.serialize, request);
-    handler.func(stream);
+    catch (err) {
+        call.sendError(err);
+    }
 }
 function handleBidiStreaming(call, handler, metadata, encoding) {
     const stream = new server_call_1.ServerDuplexStreamImpl(call, metadata, handler.serialize, handler.deserialize, encoding);
@@ -10880,7 +11943,7 @@ function handleBidiStreaming(call, handler, metadata, encoding) {
  *
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.extractAndSelectServiceConfig = exports.validateServiceConfig = void 0;
+exports.extractAndSelectServiceConfig = exports.validateServiceConfig = exports.validateRetryThrottling = void 0;
 /* This file implements gRFC A2 and the service config spec:
  * https://github.com/grpc/proposal/blob/master/A2-service-configs-in-dns.md
  * https://github.com/grpc/grpc/blob/master/doc/service_config.md. Each
@@ -10891,12 +11954,13 @@ exports.extractAndSelectServiceConfig = exports.validateServiceConfig = void 0;
  * runtime */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const os = __nccwpck_require__(2037);
+const constants_1 = __nccwpck_require__(634);
 const load_balancer_1 = __nccwpck_require__(2680);
 /**
  * Recognizes a number with up to 9 digits after the decimal point, followed by
  * an "s", representing a number of seconds.
  */
-const TIMEOUT_REGEX = /^\d+(\.\d{1,9})?s$/;
+const DURATION_REGEX = /^\d+(\.\d{1,9})?s$/;
 /**
  * Client language name used for determining whether this client matches a
  * `ServiceConfigCanaryConfig`'s `clientLanguage` list.
@@ -10916,6 +11980,95 @@ function validateName(obj) {
         else {
             throw new Error('Invalid method config name: invalid method');
         }
+    }
+    return result;
+}
+function validateRetryPolicy(obj) {
+    if (!('maxAttempts' in obj) ||
+        !Number.isInteger(obj.maxAttempts) ||
+        obj.maxAttempts < 2) {
+        throw new Error('Invalid method config retry policy: maxAttempts must be an integer at least 2');
+    }
+    if (!('initialBackoff' in obj) ||
+        typeof obj.initialBackoff !== 'string' ||
+        !DURATION_REGEX.test(obj.initialBackoff)) {
+        throw new Error('Invalid method config retry policy: initialBackoff must be a string consisting of a positive integer followed by s');
+    }
+    if (!('maxBackoff' in obj) ||
+        typeof obj.maxBackoff !== 'string' ||
+        !DURATION_REGEX.test(obj.maxBackoff)) {
+        throw new Error('Invalid method config retry policy: maxBackoff must be a string consisting of a positive integer followed by s');
+    }
+    if (!('backoffMultiplier' in obj) ||
+        typeof obj.backoffMultiplier !== 'number' ||
+        obj.backoffMultiplier <= 0) {
+        throw new Error('Invalid method config retry policy: backoffMultiplier must be a number greater than 0');
+    }
+    if (!('retryableStatusCodes' in obj && Array.isArray(obj.retryableStatusCodes))) {
+        throw new Error('Invalid method config retry policy: retryableStatusCodes is required');
+    }
+    if (obj.retryableStatusCodes.length === 0) {
+        throw new Error('Invalid method config retry policy: retryableStatusCodes must be non-empty');
+    }
+    for (const value of obj.retryableStatusCodes) {
+        if (typeof value === 'number') {
+            if (!Object.values(constants_1.Status).includes(value)) {
+                throw new Error('Invalid method config retry policy: retryableStatusCodes value not in status code range');
+            }
+        }
+        else if (typeof value === 'string') {
+            if (!Object.values(constants_1.Status).includes(value.toUpperCase())) {
+                throw new Error('Invalid method config retry policy: retryableStatusCodes value not a status code name');
+            }
+        }
+        else {
+            throw new Error('Invalid method config retry policy: retryableStatusCodes value must be a string or number');
+        }
+    }
+    return {
+        maxAttempts: obj.maxAttempts,
+        initialBackoff: obj.initialBackoff,
+        maxBackoff: obj.maxBackoff,
+        backoffMultiplier: obj.backoffMultiplier,
+        retryableStatusCodes: obj.retryableStatusCodes,
+    };
+}
+function validateHedgingPolicy(obj) {
+    if (!('maxAttempts' in obj) ||
+        !Number.isInteger(obj.maxAttempts) ||
+        obj.maxAttempts < 2) {
+        throw new Error('Invalid method config hedging policy: maxAttempts must be an integer at least 2');
+    }
+    if ('hedgingDelay' in obj &&
+        (typeof obj.hedgingDelay !== 'string' ||
+            !DURATION_REGEX.test(obj.hedgingDelay))) {
+        throw new Error('Invalid method config hedging policy: hedgingDelay must be a string consisting of a positive integer followed by s');
+    }
+    if ('nonFatalStatusCodes' in obj && Array.isArray(obj.nonFatalStatusCodes)) {
+        for (const value of obj.nonFatalStatusCodes) {
+            if (typeof value === 'number') {
+                if (!Object.values(constants_1.Status).includes(value)) {
+                    throw new Error('Invlid method config hedging policy: nonFatalStatusCodes value not in status code range');
+                }
+            }
+            else if (typeof value === 'string') {
+                if (!Object.values(constants_1.Status).includes(value.toUpperCase())) {
+                    throw new Error('Invlid method config hedging policy: nonFatalStatusCodes value not a status code name');
+                }
+            }
+            else {
+                throw new Error('Invlid method config hedging policy: nonFatalStatusCodes value must be a string or number');
+            }
+        }
+    }
+    const result = {
+        maxAttempts: obj.maxAttempts,
+    };
+    if (obj.hedgingDelay) {
+        result.hedgingDelay = obj.hedgingDelay;
+    }
+    if (obj.nonFatalStatusCodes) {
+        result.nonFatalStatusCodes = obj.nonFatalStatusCodes;
     }
     return result;
 }
@@ -10949,7 +12102,7 @@ function validateMethodConfig(obj) {
             result.timeout = obj.timeout;
         }
         else if (typeof obj.timeout === 'string' &&
-            TIMEOUT_REGEX.test(obj.timeout)) {
+            DURATION_REGEX.test(obj.timeout)) {
             const timeoutParts = obj.timeout
                 .substring(0, obj.timeout.length - 1)
                 .split('.');
@@ -10974,8 +12127,37 @@ function validateMethodConfig(obj) {
         }
         result.maxResponseBytes = obj.maxResponseBytes;
     }
+    if ('retryPolicy' in obj) {
+        if ('hedgingPolicy' in obj) {
+            throw new Error('Invalid method config: retryPolicy and hedgingPolicy cannot both be specified');
+        }
+        else {
+            result.retryPolicy = validateRetryPolicy(obj.retryPolicy);
+        }
+    }
+    else if ('hedgingPolicy' in obj) {
+        result.hedgingPolicy = validateHedgingPolicy(obj.hedgingPolicy);
+    }
     return result;
 }
+function validateRetryThrottling(obj) {
+    if (!('maxTokens' in obj) ||
+        typeof obj.maxTokens !== 'number' ||
+        obj.maxTokens <= 0 ||
+        obj.maxTokens > 1000) {
+        throw new Error('Invalid retryThrottling: maxTokens must be a number in (0, 1000]');
+    }
+    if (!('tokenRatio' in obj) ||
+        typeof obj.tokenRatio !== 'number' ||
+        obj.tokenRatio <= 0) {
+        throw new Error('Invalid retryThrottling: tokenRatio must be a number greater than 0');
+    }
+    return {
+        maxTokens: +obj.maxTokens.toFixed(3),
+        tokenRatio: +obj.tokenRatio.toFixed(3),
+    };
+}
+exports.validateRetryThrottling = validateRetryThrottling;
 function validateServiceConfig(obj) {
     const result = {
         loadBalancingConfig: [],
@@ -10992,7 +12174,7 @@ function validateServiceConfig(obj) {
     if ('loadBalancingConfig' in obj) {
         if (Array.isArray(obj.loadBalancingConfig)) {
             for (const config of obj.loadBalancingConfig) {
-                result.loadBalancingConfig.push(load_balancer_1.validateLoadBalancingConfig(config));
+                result.loadBalancingConfig.push((0, load_balancer_1.validateLoadBalancingConfig)(config));
             }
         }
         else {
@@ -11005,6 +12187,9 @@ function validateServiceConfig(obj) {
                 result.methodConfig.push(validateMethodConfig(methodConfig));
             }
         }
+    }
+    if ('retryThrottling' in obj) {
+        result.retryThrottling = validateRetryThrottling(obj.retryThrottling);
     }
     // Validate method name uniqueness
     const seenMethodNames = [];
@@ -11356,6 +12541,12 @@ function isTcpSubchannelAddress(address) {
 }
 exports.isTcpSubchannelAddress = isTcpSubchannelAddress;
 function subchannelAddressEqual(address1, address2) {
+    if (!address1 && !address2) {
+        return true;
+    }
+    if (!address1 || !address2) {
+        return false;
+    }
     if (isTcpSubchannelAddress(address1)) {
         return (isTcpSubchannelAddress(address2) &&
             address1.host === address2.host &&
@@ -11377,20 +12568,482 @@ function subchannelAddressToString(address) {
 exports.subchannelAddressToString = subchannelAddressToString;
 const DEFAULT_PORT = 443;
 function stringToSubchannelAddress(addressString, port) {
-    if (net_1.isIP(addressString)) {
+    if ((0, net_1.isIP)(addressString)) {
         return {
             host: addressString,
-            port: port !== null && port !== void 0 ? port : DEFAULT_PORT
+            port: port !== null && port !== void 0 ? port : DEFAULT_PORT,
         };
     }
     else {
         return {
-            path: addressString
+            path: addressString,
         };
     }
 }
 exports.stringToSubchannelAddress = stringToSubchannelAddress;
 //# sourceMappingURL=subchannel-address.js.map
+
+/***/ }),
+
+/***/ 6940:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2019 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Http2SubchannelCall = void 0;
+const http2 = __nccwpck_require__(5158);
+const os = __nccwpck_require__(2037);
+const constants_1 = __nccwpck_require__(634);
+const metadata_1 = __nccwpck_require__(3665);
+const stream_decoder_1 = __nccwpck_require__(6575);
+const logging = __nccwpck_require__(5993);
+const constants_2 = __nccwpck_require__(634);
+const TRACER_NAME = 'subchannel_call';
+/**
+ * Should do approximately the same thing as util.getSystemErrorName but the
+ * TypeScript types don't have that function for some reason so I just made my
+ * own.
+ * @param errno
+ */
+function getSystemErrorName(errno) {
+    for (const [name, num] of Object.entries(os.constants.errno)) {
+        if (num === errno) {
+            return name;
+        }
+    }
+    return 'Unknown system error ' + errno;
+}
+class Http2SubchannelCall {
+    constructor(http2Stream, callEventTracker, listener, transport, callId) {
+        this.http2Stream = http2Stream;
+        this.callEventTracker = callEventTracker;
+        this.listener = listener;
+        this.transport = transport;
+        this.callId = callId;
+        this.decoder = new stream_decoder_1.StreamDecoder();
+        this.isReadFilterPending = false;
+        this.isPushPending = false;
+        this.canPush = false;
+        /**
+         * Indicates that an 'end' event has come from the http2 stream, so there
+         * will be no more data events.
+         */
+        this.readsClosed = false;
+        this.statusOutput = false;
+        this.unpushedReadMessages = [];
+        // Status code mapped from :status. To be used if grpc-status is not received
+        this.mappedStatusCode = constants_1.Status.UNKNOWN;
+        // This is populated (non-null) if and only if the call has ended
+        this.finalStatus = null;
+        this.internalError = null;
+        http2Stream.on('response', (headers, flags) => {
+            let headersString = '';
+            for (const header of Object.keys(headers)) {
+                headersString += '\t\t' + header + ': ' + headers[header] + '\n';
+            }
+            this.trace('Received server headers:\n' + headersString);
+            switch (headers[':status']) {
+                // TODO(murgatroid99): handle 100 and 101
+                case 400:
+                    this.mappedStatusCode = constants_1.Status.INTERNAL;
+                    break;
+                case 401:
+                    this.mappedStatusCode = constants_1.Status.UNAUTHENTICATED;
+                    break;
+                case 403:
+                    this.mappedStatusCode = constants_1.Status.PERMISSION_DENIED;
+                    break;
+                case 404:
+                    this.mappedStatusCode = constants_1.Status.UNIMPLEMENTED;
+                    break;
+                case 429:
+                case 502:
+                case 503:
+                case 504:
+                    this.mappedStatusCode = constants_1.Status.UNAVAILABLE;
+                    break;
+                default:
+                    this.mappedStatusCode = constants_1.Status.UNKNOWN;
+            }
+            if (flags & http2.constants.NGHTTP2_FLAG_END_STREAM) {
+                this.handleTrailers(headers);
+            }
+            else {
+                let metadata;
+                try {
+                    metadata = metadata_1.Metadata.fromHttp2Headers(headers);
+                }
+                catch (error) {
+                    this.endCall({
+                        code: constants_1.Status.UNKNOWN,
+                        details: error.message,
+                        metadata: new metadata_1.Metadata(),
+                    });
+                    return;
+                }
+                this.listener.onReceiveMetadata(metadata);
+            }
+        });
+        http2Stream.on('trailers', (headers) => {
+            this.handleTrailers(headers);
+        });
+        http2Stream.on('data', (data) => {
+            /* If the status has already been output, allow the http2 stream to
+             * drain without processing the data. */
+            if (this.statusOutput) {
+                return;
+            }
+            this.trace('receive HTTP/2 data frame of length ' + data.length);
+            const messages = this.decoder.write(data);
+            for (const message of messages) {
+                this.trace('parsed message of length ' + message.length);
+                this.callEventTracker.addMessageReceived();
+                this.tryPush(message);
+            }
+        });
+        http2Stream.on('end', () => {
+            this.readsClosed = true;
+            this.maybeOutputStatus();
+        });
+        http2Stream.on('close', () => {
+            /* Use process.next tick to ensure that this code happens after any
+             * "error" event that may be emitted at about the same time, so that
+             * we can bubble up the error message from that event. */
+            process.nextTick(() => {
+                var _a;
+                this.trace('HTTP/2 stream closed with code ' + http2Stream.rstCode);
+                /* If we have a final status with an OK status code, that means that
+                 * we have received all of the messages and we have processed the
+                 * trailers and the call completed successfully, so it doesn't matter
+                 * how the stream ends after that */
+                if (((_a = this.finalStatus) === null || _a === void 0 ? void 0 : _a.code) === constants_1.Status.OK) {
+                    return;
+                }
+                let code;
+                let details = '';
+                switch (http2Stream.rstCode) {
+                    case http2.constants.NGHTTP2_NO_ERROR:
+                        /* If we get a NO_ERROR code and we already have a status, the
+                         * stream completed properly and we just haven't fully processed
+                         * it yet */
+                        if (this.finalStatus !== null) {
+                            return;
+                        }
+                        code = constants_1.Status.INTERNAL;
+                        details = `Received RST_STREAM with code ${http2Stream.rstCode}`;
+                        break;
+                    case http2.constants.NGHTTP2_REFUSED_STREAM:
+                        code = constants_1.Status.UNAVAILABLE;
+                        details = 'Stream refused by server';
+                        break;
+                    case http2.constants.NGHTTP2_CANCEL:
+                        code = constants_1.Status.CANCELLED;
+                        details = 'Call cancelled';
+                        break;
+                    case http2.constants.NGHTTP2_ENHANCE_YOUR_CALM:
+                        code = constants_1.Status.RESOURCE_EXHAUSTED;
+                        details = 'Bandwidth exhausted or memory limit exceeded';
+                        break;
+                    case http2.constants.NGHTTP2_INADEQUATE_SECURITY:
+                        code = constants_1.Status.PERMISSION_DENIED;
+                        details = 'Protocol not secure enough';
+                        break;
+                    case http2.constants.NGHTTP2_INTERNAL_ERROR:
+                        code = constants_1.Status.INTERNAL;
+                        if (this.internalError === null) {
+                            /* This error code was previously handled in the default case, and
+                             * there are several instances of it online, so I wanted to
+                             * preserve the original error message so that people find existing
+                             * information in searches, but also include the more recognizable
+                             * "Internal server error" message. */
+                            details = `Received RST_STREAM with code ${http2Stream.rstCode} (Internal server error)`;
+                        }
+                        else {
+                            if (this.internalError.code === 'ECONNRESET' ||
+                                this.internalError.code === 'ETIMEDOUT') {
+                                code = constants_1.Status.UNAVAILABLE;
+                                details = this.internalError.message;
+                            }
+                            else {
+                                /* The "Received RST_STREAM with code ..." error is preserved
+                                 * here for continuity with errors reported online, but the
+                                 * error message at the end will probably be more relevant in
+                                 * most cases. */
+                                details = `Received RST_STREAM with code ${http2Stream.rstCode} triggered by internal client error: ${this.internalError.message}`;
+                            }
+                        }
+                        break;
+                    default:
+                        code = constants_1.Status.INTERNAL;
+                        details = `Received RST_STREAM with code ${http2Stream.rstCode}`;
+                }
+                // This is a no-op if trailers were received at all.
+                // This is OK, because status codes emitted here correspond to more
+                // catastrophic issues that prevent us from receiving trailers in the
+                // first place.
+                this.endCall({
+                    code,
+                    details,
+                    metadata: new metadata_1.Metadata(),
+                    rstCode: http2Stream.rstCode,
+                });
+            });
+        });
+        http2Stream.on('error', (err) => {
+            /* We need an error handler here to stop "Uncaught Error" exceptions
+             * from bubbling up. However, errors here should all correspond to
+             * "close" events, where we will handle the error more granularly */
+            /* Specifically looking for stream errors that were *not* constructed
+             * from a RST_STREAM response here:
+             * https://github.com/nodejs/node/blob/8b8620d580314050175983402dfddf2674e8e22a/lib/internal/http2/core.js#L2267
+             */
+            if (err.code !== 'ERR_HTTP2_STREAM_ERROR') {
+                this.trace('Node error event: message=' +
+                    err.message +
+                    ' code=' +
+                    err.code +
+                    ' errno=' +
+                    getSystemErrorName(err.errno) +
+                    ' syscall=' +
+                    err.syscall);
+                this.internalError = err;
+            }
+            this.callEventTracker.onStreamEnd(false);
+        });
+    }
+    onDisconnect() {
+        this.endCall({
+            code: constants_1.Status.UNAVAILABLE,
+            details: 'Connection dropped',
+            metadata: new metadata_1.Metadata(),
+        });
+    }
+    outputStatus() {
+        /* Precondition: this.finalStatus !== null */
+        if (!this.statusOutput) {
+            this.statusOutput = true;
+            this.trace('ended with status: code=' +
+                this.finalStatus.code +
+                ' details="' +
+                this.finalStatus.details +
+                '"');
+            this.callEventTracker.onCallEnd(this.finalStatus);
+            /* We delay the actual action of bubbling up the status to insulate the
+             * cleanup code in this class from any errors that may be thrown in the
+             * upper layers as a result of bubbling up the status. In particular,
+             * if the status is not OK, the "error" event may be emitted
+             * synchronously at the top level, which will result in a thrown error if
+             * the user does not handle that event. */
+            process.nextTick(() => {
+                this.listener.onReceiveStatus(this.finalStatus);
+            });
+            /* Leave the http2 stream in flowing state to drain incoming messages, to
+             * ensure that the stream closure completes. The call stream already does
+             * not push more messages after the status is output, so the messages go
+             * nowhere either way. */
+            this.http2Stream.resume();
+        }
+    }
+    trace(text) {
+        logging.trace(constants_2.LogVerbosity.DEBUG, TRACER_NAME, '[' + this.callId + '] ' + text);
+    }
+    /**
+     * On first call, emits a 'status' event with the given StatusObject.
+     * Subsequent calls are no-ops.
+     * @param status The status of the call.
+     */
+    endCall(status) {
+        /* If the status is OK and a new status comes in (e.g. from a
+         * deserialization failure), that new status takes priority */
+        if (this.finalStatus === null || this.finalStatus.code === constants_1.Status.OK) {
+            this.finalStatus = status;
+            this.maybeOutputStatus();
+        }
+        this.destroyHttp2Stream();
+    }
+    maybeOutputStatus() {
+        if (this.finalStatus !== null) {
+            /* The combination check of readsClosed and that the two message buffer
+             * arrays are empty checks that there all incoming data has been fully
+             * processed */
+            if (this.finalStatus.code !== constants_1.Status.OK ||
+                (this.readsClosed &&
+                    this.unpushedReadMessages.length === 0 &&
+                    !this.isReadFilterPending &&
+                    !this.isPushPending)) {
+                this.outputStatus();
+            }
+        }
+    }
+    push(message) {
+        this.trace('pushing to reader message of length ' +
+            (message instanceof Buffer ? message.length : null));
+        this.canPush = false;
+        this.isPushPending = true;
+        process.nextTick(() => {
+            this.isPushPending = false;
+            /* If we have already output the status any later messages should be
+             * ignored, and can cause out-of-order operation errors higher up in the
+             * stack. Checking as late as possible here to avoid any race conditions.
+             */
+            if (this.statusOutput) {
+                return;
+            }
+            this.listener.onReceiveMessage(message);
+            this.maybeOutputStatus();
+        });
+    }
+    tryPush(messageBytes) {
+        if (this.canPush) {
+            this.http2Stream.pause();
+            this.push(messageBytes);
+        }
+        else {
+            this.trace('unpushedReadMessages.push message of length ' + messageBytes.length);
+            this.unpushedReadMessages.push(messageBytes);
+        }
+    }
+    handleTrailers(headers) {
+        this.callEventTracker.onStreamEnd(true);
+        let headersString = '';
+        for (const header of Object.keys(headers)) {
+            headersString += '\t\t' + header + ': ' + headers[header] + '\n';
+        }
+        this.trace('Received server trailers:\n' + headersString);
+        let metadata;
+        try {
+            metadata = metadata_1.Metadata.fromHttp2Headers(headers);
+        }
+        catch (e) {
+            metadata = new metadata_1.Metadata();
+        }
+        const metadataMap = metadata.getMap();
+        let code = this.mappedStatusCode;
+        if (code === constants_1.Status.UNKNOWN &&
+            typeof metadataMap['grpc-status'] === 'string') {
+            const receivedStatus = Number(metadataMap['grpc-status']);
+            if (receivedStatus in constants_1.Status) {
+                code = receivedStatus;
+                this.trace('received status code ' + receivedStatus + ' from server');
+            }
+            metadata.remove('grpc-status');
+        }
+        let details = '';
+        if (typeof metadataMap['grpc-message'] === 'string') {
+            try {
+                details = decodeURI(metadataMap['grpc-message']);
+            }
+            catch (e) {
+                details = metadataMap['grpc-message'];
+            }
+            metadata.remove('grpc-message');
+            this.trace('received status details string "' + details + '" from server');
+        }
+        const status = { code, details, metadata };
+        // This is a no-op if the call was already ended when handling headers.
+        this.endCall(status);
+    }
+    destroyHttp2Stream() {
+        var _a;
+        // The http2 stream could already have been destroyed if cancelWithStatus
+        // is called in response to an internal http2 error.
+        if (!this.http2Stream.destroyed) {
+            /* If the call has ended with an OK status, communicate that when closing
+             * the stream, partly to avoid a situation in which we detect an error
+             * RST_STREAM as a result after we have the status */
+            let code;
+            if (((_a = this.finalStatus) === null || _a === void 0 ? void 0 : _a.code) === constants_1.Status.OK) {
+                code = http2.constants.NGHTTP2_NO_ERROR;
+            }
+            else {
+                code = http2.constants.NGHTTP2_CANCEL;
+            }
+            this.trace('close http2 stream with code ' + code);
+            this.http2Stream.close(code);
+        }
+    }
+    cancelWithStatus(status, details) {
+        this.trace('cancelWithStatus code: ' + status + ' details: "' + details + '"');
+        this.endCall({ code: status, details, metadata: new metadata_1.Metadata() });
+    }
+    getStatus() {
+        return this.finalStatus;
+    }
+    getPeer() {
+        return this.transport.getPeerName();
+    }
+    getCallNumber() {
+        return this.callId;
+    }
+    startRead() {
+        /* If the stream has ended with an error, we should not emit any more
+         * messages and we should communicate that the stream has ended */
+        if (this.finalStatus !== null && this.finalStatus.code !== constants_1.Status.OK) {
+            this.readsClosed = true;
+            this.maybeOutputStatus();
+            return;
+        }
+        this.canPush = true;
+        if (this.unpushedReadMessages.length > 0) {
+            const nextMessage = this.unpushedReadMessages.shift();
+            this.push(nextMessage);
+            return;
+        }
+        /* Only resume reading from the http2Stream if we don't have any pending
+         * messages to emit */
+        this.http2Stream.resume();
+    }
+    sendMessageWithContext(context, message) {
+        this.trace('write() called with message of length ' + message.length);
+        const cb = (error) => {
+            var _a;
+            let code = constants_1.Status.UNAVAILABLE;
+            if ((error === null || error === void 0 ? void 0 : error.code) === 'ERR_STREAM_WRITE_AFTER_END') {
+                code = constants_1.Status.INTERNAL;
+            }
+            if (error) {
+                this.cancelWithStatus(code, `Write error: ${error.message}`);
+            }
+            (_a = context.callback) === null || _a === void 0 ? void 0 : _a.call(context);
+        };
+        this.trace('sending data chunk of length ' + message.length);
+        this.callEventTracker.addMessageSent();
+        try {
+            this.http2Stream.write(message, cb);
+        }
+        catch (error) {
+            this.endCall({
+                code: constants_1.Status.UNAVAILABLE,
+                details: `Write failed with error ${error.message}`,
+                metadata: new metadata_1.Metadata(),
+            });
+        }
+    }
+    halfClose() {
+        this.trace('end() called');
+        this.trace('calling end() on HTTP/2 stream');
+        this.http2Stream.end();
+    }
+}
+exports.Http2SubchannelCall = Http2SubchannelCall;
+//# sourceMappingURL=subchannel-call.js.map
 
 /***/ }),
 
@@ -11436,6 +13089,9 @@ class BaseSubchannelWrapper {
     getAddress() {
         return this.child.getAddress();
     }
+    throttleKeepalive(newKeepaliveTime) {
+        this.child.throttleKeepalive(newKeepaliveTime);
+    }
     ref() {
         this.child.ref();
     }
@@ -11447,6 +13103,9 @@ class BaseSubchannelWrapper {
     }
     getRealSubchannel() {
         return this.child.getRealSubchannel();
+    }
+    realSubchannelEquals(other) {
+        return this.getRealSubchannel() === other.getRealSubchannel();
     }
 }
 exports.BaseSubchannelWrapper = BaseSubchannelWrapper;
@@ -11481,6 +13140,7 @@ const channel_options_1 = __nccwpck_require__(9810);
 const subchannel_1 = __nccwpck_require__(4764);
 const subchannel_address_1 = __nccwpck_require__(9905);
 const uri_parser_1 = __nccwpck_require__(5974);
+const transport_1 = __nccwpck_require__(6690);
 // 10 seconds in milliseconds. This value is arbitrary.
 /**
  * The amount of time in between checks for dropping subchannels that have no
@@ -11491,11 +13151,8 @@ class SubchannelPool {
     /**
      * A pool of subchannels use for making connections. Subchannels with the
      * exact same parameters will be reused.
-     * @param global If true, this is the global subchannel pool. Otherwise, it
-     * is the pool for a single channel.
      */
-    constructor(global) {
-        this.global = global;
+    constructor() {
         this.pool = Object.create(null);
         /**
          * A timer of a task performing a periodic subchannel cleanup.
@@ -11514,7 +13171,7 @@ class SubchannelPool {
         // eslint-disable-disable-next-line:forin
         for (const channelTarget in this.pool) {
             const subchannelObjArray = this.pool[channelTarget];
-            const refedSubchannels = subchannelObjArray.filter((value) => !value.subchannel.unrefIfOneRef());
+            const refedSubchannels = subchannelObjArray.filter(value => !value.subchannel.unrefIfOneRef());
             if (refedSubchannels.length > 0) {
                 allSubchannelsUnrefed = false;
             }
@@ -11536,7 +13193,7 @@ class SubchannelPool {
      */
     ensureCleanupTask() {
         var _a, _b;
-        if (this.global && this.cleanupTimer === null) {
+        if (this.cleanupTimer === null) {
             this.cleanupTimer = setInterval(() => {
                 this.unrefUnusedSubchannels();
             }, REF_CHECK_INTERVAL);
@@ -11555,19 +13212,19 @@ class SubchannelPool {
      */
     getOrCreateSubchannel(channelTargetUri, subchannelTarget, channelArguments, channelCredentials) {
         this.ensureCleanupTask();
-        const channelTarget = uri_parser_1.uriToString(channelTargetUri);
+        const channelTarget = (0, uri_parser_1.uriToString)(channelTargetUri);
         if (channelTarget in this.pool) {
             const subchannelObjArray = this.pool[channelTarget];
             for (const subchannelObj of subchannelObjArray) {
-                if (subchannel_address_1.subchannelAddressEqual(subchannelTarget, subchannelObj.subchannelAddress) &&
-                    channel_options_1.channelOptionsEqual(channelArguments, subchannelObj.channelArguments) &&
+                if ((0, subchannel_address_1.subchannelAddressEqual)(subchannelTarget, subchannelObj.subchannelAddress) &&
+                    (0, channel_options_1.channelOptionsEqual)(channelArguments, subchannelObj.channelArguments) &&
                     channelCredentials._equals(subchannelObj.channelCredentials)) {
                     return subchannelObj.subchannel;
                 }
             }
         }
         // If we get here, no matching subchannel was found
-        const subchannel = new subchannel_1.Subchannel(channelTargetUri, subchannelTarget, channelArguments, channelCredentials);
+        const subchannel = new subchannel_1.Subchannel(channelTargetUri, subchannelTarget, channelArguments, channelCredentials, new transport_1.Http2SubchannelConnector(channelTargetUri));
         if (!(channelTarget in this.pool)) {
             this.pool[channelTarget] = [];
         }
@@ -11577,14 +13234,12 @@ class SubchannelPool {
             channelCredentials,
             subchannel,
         });
-        if (this.global) {
-            subchannel.ref();
-        }
+        subchannel.ref();
         return subchannel;
     }
 }
 exports.SubchannelPool = SubchannelPool;
-const globalSubchannelPool = new SubchannelPool(true);
+const globalSubchannelPool = new SubchannelPool();
 /**
  * Get either the global subchannel pool, or a new subchannel pool.
  * @param global
@@ -11594,7 +13249,7 @@ function getSubchannelPool(global) {
         return globalSubchannelPool;
     }
     else {
-        return new SubchannelPool(false);
+        return new SubchannelPool();
     }
 }
 exports.getSubchannelPool = getSubchannelPool;
@@ -11625,41 +13280,18 @@ exports.getSubchannelPool = getSubchannelPool;
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Subchannel = void 0;
-const http2 = __nccwpck_require__(5158);
-const tls_1 = __nccwpck_require__(4404);
 const connectivity_state_1 = __nccwpck_require__(878);
 const backoff_timeout_1 = __nccwpck_require__(4186);
-const resolver_1 = __nccwpck_require__(1594);
 const logging = __nccwpck_require__(5993);
 const constants_1 = __nccwpck_require__(634);
-const http_proxy_1 = __nccwpck_require__(4000);
-const net = __nccwpck_require__(1808);
 const uri_parser_1 = __nccwpck_require__(5974);
 const subchannel_address_1 = __nccwpck_require__(9905);
 const channelz_1 = __nccwpck_require__(9975);
-const clientVersion = (__nccwpck_require__(6569)/* .version */ .i8);
 const TRACER_NAME = 'subchannel';
-const FLOW_CONTROL_TRACER_NAME = 'subchannel_flowctrl';
-const MIN_CONNECT_TIMEOUT_MS = 20000;
-const INITIAL_BACKOFF_MS = 1000;
-const BACKOFF_MULTIPLIER = 1.6;
-const MAX_BACKOFF_MS = 120000;
-const BACKOFF_JITTER = 0.2;
 /* setInterval and setTimeout only accept signed 32 bit integers. JS doesn't
  * have a constant for the max signed 32 bit integer, so this is a simple way
  * to calculate it */
 const KEEPALIVE_MAX_TIME_MS = ~(1 << 31);
-const KEEPALIVE_TIMEOUT_MS = 20000;
-const { HTTP2_HEADER_AUTHORITY, HTTP2_HEADER_CONTENT_TYPE, HTTP2_HEADER_METHOD, HTTP2_HEADER_PATH, HTTP2_HEADER_TE, HTTP2_HEADER_USER_AGENT, } = http2.constants;
-/**
- * Get a number uniformly at random in the range [min, max)
- * @param min
- * @param max
- */
-function uniformRandom(min, max) {
-    return Math.random() * (max - min) + min;
-}
-const tooManyPingsData = Buffer.from('too_many_pings', 'ascii');
 class Subchannel {
     /**
      * A class representing a connection to a single backend.
@@ -11671,11 +13303,13 @@ class Subchannel {
      * @param credentials The channel credentials used to establish this
      *     connection
      */
-    constructor(channelTarget, subchannelAddress, options, credentials) {
+    constructor(channelTarget, subchannelAddress, options, credentials, connector) {
+        var _a;
         this.channelTarget = channelTarget;
         this.subchannelAddress = subchannelAddress;
         this.options = options;
         this.credentials = credentials;
+        this.connector = connector;
         /**
          * The subchannel's current connectivity state. Invariant: `session` === `null`
          * if and only if `connectivityState` is IDLE or TRANSIENT_FAILURE.
@@ -11684,7 +13318,7 @@ class Subchannel {
         /**
          * The underlying http2 session used to make requests.
          */
-        this.session = null;
+        this.transport = null;
         /**
          * Indicates that the subchannel should transition from TRANSIENT_FAILURE to
          * CONNECTING instead of IDLE when the backoff timeout ends.
@@ -11695,29 +13329,7 @@ class Subchannel {
          * state changes. Will be modified by `addConnectivityStateListener` and
          * `removeConnectivityStateListener`
          */
-        this.stateListeners = [];
-        /**
-         * A list of listener functions that will be called when the underlying
-         * socket disconnects. Used for ending active calls with an UNAVAILABLE
-         * status.
-         */
-        this.disconnectListeners = [];
-        /**
-         * The amount of time in between sending pings
-         */
-        this.keepaliveTimeMs = KEEPALIVE_MAX_TIME_MS;
-        /**
-         * The amount of time to wait for an acknowledgement after sending a ping
-         */
-        this.keepaliveTimeoutMs = KEEPALIVE_TIMEOUT_MS;
-        /**
-         * Indicates whether keepalive pings should be sent without any active calls
-         */
-        this.keepaliveWithoutCalls = false;
-        /**
-         * Tracks calls with references to this subchannel
-         */
-        this.callRefcount = 0;
+        this.stateListeners = new Set();
         /**
          * Tracks channels and subchannel pools with references to this subchannel
          */
@@ -11727,43 +13339,7 @@ class Subchannel {
         this.callTracker = new channelz_1.ChannelzCallTracker();
         this.childrenTracker = new channelz_1.ChannelzChildrenTracker();
         // Channelz socket info
-        this.channelzSocketRef = null;
-        /**
-         * Name of the remote server, if it is not the same as the subchannel
-         * address, i.e. if connecting through an HTTP CONNECT proxy.
-         */
-        this.remoteName = null;
         this.streamTracker = new channelz_1.ChannelzCallTracker();
-        this.keepalivesSent = 0;
-        this.messagesSent = 0;
-        this.messagesReceived = 0;
-        this.lastMessageSentTimestamp = null;
-        this.lastMessageReceivedTimestamp = null;
-        // Build user-agent string.
-        this.userAgent = [
-            options['grpc.primary_user_agent'],
-            `grpc-node-js/${clientVersion}`,
-            options['grpc.secondary_user_agent'],
-        ]
-            .filter((e) => e)
-            .join(' '); // remove falsey values first
-        if ('grpc.keepalive_time_ms' in options) {
-            this.keepaliveTimeMs = options['grpc.keepalive_time_ms'];
-        }
-        if ('grpc.keepalive_timeout_ms' in options) {
-            this.keepaliveTimeoutMs = options['grpc.keepalive_timeout_ms'];
-        }
-        if ('grpc.keepalive_permit_without_calls' in options) {
-            this.keepaliveWithoutCalls =
-                options['grpc.keepalive_permit_without_calls'] === 1;
-        }
-        else {
-            this.keepaliveWithoutCalls = false;
-        }
-        this.keepaliveIntervalId = setTimeout(() => { }, 0);
-        clearTimeout(this.keepaliveIntervalId);
-        this.keepaliveTimeoutId = setTimeout(() => { }, 0);
-        clearTimeout(this.keepaliveTimeoutId);
         const backoffOptions = {
             initialDelay: options['grpc.initial_reconnect_backoff_ms'],
             maxDelay: options['grpc.max_reconnect_backoff_ms'],
@@ -11771,24 +13347,18 @@ class Subchannel {
         this.backoffTimeout = new backoff_timeout_1.BackoffTimeout(() => {
             this.handleBackoffTimer();
         }, backoffOptions);
-        this.subchannelAddressString = subchannel_address_1.subchannelAddressToString(subchannelAddress);
+        this.subchannelAddressString = (0, subchannel_address_1.subchannelAddressToString)(subchannelAddress);
+        this.keepaliveTime = (_a = options['grpc.keepalive_time_ms']) !== null && _a !== void 0 ? _a : -1;
         if (options['grpc.enable_channelz'] === 0) {
             this.channelzEnabled = false;
         }
         this.channelzTrace = new channelz_1.ChannelzTrace();
+        this.channelzRef = (0, channelz_1.registerChannelzSubchannel)(this.subchannelAddressString, () => this.getChannelzInfo(), this.channelzEnabled);
         if (this.channelzEnabled) {
-            this.channelzRef = channelz_1.registerChannelzSubchannel(this.subchannelAddressString, () => this.getChannelzInfo());
             this.channelzTrace.addTrace('CT_INFO', 'Subchannel created');
         }
-        else {
-            // Dummy channelz ref that will never be used
-            this.channelzRef = {
-                kind: 'subchannel',
-                id: -1,
-                name: ''
-            };
-        }
-        this.trace('Subchannel constructed with options ' + JSON.stringify(options, undefined, 2));
+        this.trace('Subchannel constructed with options ' +
+            JSON.stringify(options, undefined, 2));
     }
     getChannelzInfo() {
         return {
@@ -11796,81 +13366,24 @@ class Subchannel {
             trace: this.channelzTrace,
             callTracker: this.callTracker,
             children: this.childrenTracker.getChildLists(),
-            target: this.subchannelAddressString
+            target: this.subchannelAddressString,
         };
-    }
-    getChannelzSocketInfo() {
-        var _a, _b, _c;
-        if (this.session === null) {
-            return null;
-        }
-        const sessionSocket = this.session.socket;
-        const remoteAddress = sessionSocket.remoteAddress ? subchannel_address_1.stringToSubchannelAddress(sessionSocket.remoteAddress, sessionSocket.remotePort) : null;
-        const localAddress = sessionSocket.localAddress ? subchannel_address_1.stringToSubchannelAddress(sessionSocket.localAddress, sessionSocket.localPort) : null;
-        let tlsInfo;
-        if (this.session.encrypted) {
-            const tlsSocket = sessionSocket;
-            const cipherInfo = tlsSocket.getCipher();
-            const certificate = tlsSocket.getCertificate();
-            const peerCertificate = tlsSocket.getPeerCertificate();
-            tlsInfo = {
-                cipherSuiteStandardName: (_a = cipherInfo.standardName) !== null && _a !== void 0 ? _a : null,
-                cipherSuiteOtherName: cipherInfo.standardName ? null : cipherInfo.name,
-                localCertificate: (certificate && 'raw' in certificate) ? certificate.raw : null,
-                remoteCertificate: (peerCertificate && 'raw' in peerCertificate) ? peerCertificate.raw : null
-            };
-        }
-        else {
-            tlsInfo = null;
-        }
-        const socketInfo = {
-            remoteAddress: remoteAddress,
-            localAddress: localAddress,
-            security: tlsInfo,
-            remoteName: this.remoteName,
-            streamsStarted: this.streamTracker.callsStarted,
-            streamsSucceeded: this.streamTracker.callsSucceeded,
-            streamsFailed: this.streamTracker.callsFailed,
-            messagesSent: this.messagesSent,
-            messagesReceived: this.messagesReceived,
-            keepAlivesSent: this.keepalivesSent,
-            lastLocalStreamCreatedTimestamp: this.streamTracker.lastCallStartedTimestamp,
-            lastRemoteStreamCreatedTimestamp: null,
-            lastMessageSentTimestamp: this.lastMessageSentTimestamp,
-            lastMessageReceivedTimestamp: this.lastMessageReceivedTimestamp,
-            localFlowControlWindow: (_b = this.session.state.localWindowSize) !== null && _b !== void 0 ? _b : null,
-            remoteFlowControlWindow: (_c = this.session.state.remoteWindowSize) !== null && _c !== void 0 ? _c : null
-        };
-        return socketInfo;
-    }
-    resetChannelzSocketInfo() {
-        if (!this.channelzEnabled) {
-            return;
-        }
-        if (this.channelzSocketRef) {
-            channelz_1.unregisterChannelzRef(this.channelzSocketRef);
-            this.childrenTracker.unrefChild(this.channelzSocketRef);
-            this.channelzSocketRef = null;
-        }
-        this.remoteName = null;
-        this.streamTracker = new channelz_1.ChannelzCallTracker();
-        this.keepalivesSent = 0;
-        this.messagesSent = 0;
-        this.messagesReceived = 0;
-        this.lastMessageSentTimestamp = null;
-        this.lastMessageReceivedTimestamp = null;
     }
     trace(text) {
-        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, '(' + this.channelzRef.id + ') ' + this.subchannelAddressString + ' ' + text);
+        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, '(' +
+            this.channelzRef.id +
+            ') ' +
+            this.subchannelAddressString +
+            ' ' +
+            text);
     }
     refTrace(text) {
-        logging.trace(constants_1.LogVerbosity.DEBUG, 'subchannel_refcount', '(' + this.channelzRef.id + ') ' + this.subchannelAddressString + ' ' + text);
-    }
-    flowControlTrace(text) {
-        logging.trace(constants_1.LogVerbosity.DEBUG, FLOW_CONTROL_TRACER_NAME, '(' + this.channelzRef.id + ') ' + this.subchannelAddressString + ' ' + text);
-    }
-    internalsTrace(text) {
-        logging.trace(constants_1.LogVerbosity.DEBUG, 'subchannel_internals', '(' + this.channelzRef.id + ') ' + this.subchannelAddressString + ' ' + text);
+        logging.trace(constants_1.LogVerbosity.DEBUG, 'subchannel_refcount', '(' +
+            this.channelzRef.id +
+            ') ' +
+            this.subchannelAddressString +
+            ' ' +
+            text);
     }
     handleBackoffTimer() {
         if (this.continueConnecting) {
@@ -11890,210 +13403,29 @@ class Subchannel {
         this.backoffTimeout.stop();
         this.backoffTimeout.reset();
     }
-    sendPing() {
-        var _a, _b;
-        if (this.channelzEnabled) {
-            this.keepalivesSent += 1;
-        }
-        logging.trace(constants_1.LogVerbosity.DEBUG, 'keepalive', '(' + this.channelzRef.id + ') ' + this.subchannelAddressString + ' ' +
-            'Sending ping');
-        this.keepaliveTimeoutId = setTimeout(() => {
-            this.transitionToState([connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.IDLE);
-        }, this.keepaliveTimeoutMs);
-        (_b = (_a = this.keepaliveTimeoutId).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
-        this.session.ping((err, duration, payload) => {
-            clearTimeout(this.keepaliveTimeoutId);
-        });
-    }
-    startKeepalivePings() {
-        var _a, _b;
-        this.keepaliveIntervalId = setInterval(() => {
-            this.sendPing();
-        }, this.keepaliveTimeMs);
-        (_b = (_a = this.keepaliveIntervalId).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
-        /* Don't send a ping immediately because whatever caused us to start
-         * sending pings should also involve some network activity. */
-    }
-    stopKeepalivePings() {
-        clearInterval(this.keepaliveIntervalId);
-        clearTimeout(this.keepaliveTimeoutId);
-    }
-    createSession(proxyConnectionResult) {
-        var _a, _b, _c;
-        if (proxyConnectionResult.realTarget) {
-            this.remoteName = uri_parser_1.uriToString(proxyConnectionResult.realTarget);
-            this.trace('creating HTTP/2 session through proxy to ' + proxyConnectionResult.realTarget);
-        }
-        else {
-            this.remoteName = null;
-            this.trace('creating HTTP/2 session');
-        }
-        const targetAuthority = resolver_1.getDefaultAuthority((_a = proxyConnectionResult.realTarget) !== null && _a !== void 0 ? _a : this.channelTarget);
-        let connectionOptions = this.credentials._getConnectionOptions() || {};
-        connectionOptions.maxSendHeaderBlockLength = Number.MAX_SAFE_INTEGER;
-        if ('grpc-node.max_session_memory' in this.options) {
-            connectionOptions.maxSessionMemory = this.options['grpc-node.max_session_memory'];
-        }
-        let addressScheme = 'http://';
-        if ('secureContext' in connectionOptions) {
-            addressScheme = 'https://';
-            // If provided, the value of grpc.ssl_target_name_override should be used
-            // to override the target hostname when checking server identity.
-            // This option is used for testing only.
-            if (this.options['grpc.ssl_target_name_override']) {
-                const sslTargetNameOverride = this.options['grpc.ssl_target_name_override'];
-                connectionOptions.checkServerIdentity = (host, cert) => {
-                    return tls_1.checkServerIdentity(sslTargetNameOverride, cert);
-                };
-                connectionOptions.servername = sslTargetNameOverride;
-            }
-            else {
-                const authorityHostname = (_c = (_b = uri_parser_1.splitHostPort(targetAuthority)) === null || _b === void 0 ? void 0 : _b.host) !== null && _c !== void 0 ? _c : 'localhost';
-                // We want to always set servername to support SNI
-                connectionOptions.servername = authorityHostname;
-            }
-            if (proxyConnectionResult.socket) {
-                /* This is part of the workaround for
-                 * https://github.com/nodejs/node/issues/32922. Without that bug,
-                 * proxyConnectionResult.socket would always be a plaintext socket and
-                 * this would say
-                 * connectionOptions.socket = proxyConnectionResult.socket; */
-                connectionOptions.createConnection = (authority, option) => {
-                    return proxyConnectionResult.socket;
-                };
-            }
-        }
-        else {
-            /* In all but the most recent versions of Node, http2.connect does not use
-             * the options when establishing plaintext connections, so we need to
-             * establish that connection explicitly. */
-            connectionOptions.createConnection = (authority, option) => {
-                if (proxyConnectionResult.socket) {
-                    return proxyConnectionResult.socket;
-                }
-                else {
-                    /* net.NetConnectOpts is declared in a way that is more restrictive
-                     * than what net.connect will actually accept, so we use the type
-                     * assertion to work around that. */
-                    return net.connect(this.subchannelAddress);
-                }
-            };
-        }
-        connectionOptions = Object.assign(Object.assign({}, connectionOptions), this.subchannelAddress);
-        /* http2.connect uses the options here:
-         * https://github.com/nodejs/node/blob/70c32a6d190e2b5d7b9ff9d5b6a459d14e8b7d59/lib/internal/http2/core.js#L3028-L3036
-         * The spread operator overides earlier values with later ones, so any port
-         * or host values in the options will be used rather than any values extracted
-         * from the first argument. In addition, the path overrides the host and port,
-         * as documented for plaintext connections here:
-         * https://nodejs.org/api/net.html#net_socket_connect_options_connectlistener
-         * and for TLS connections here:
-         * https://nodejs.org/api/tls.html#tls_tls_connect_options_callback. In
-         * earlier versions of Node, http2.connect passes these options to
-         * tls.connect but not net.connect, so in the insecure case we still need
-         * to set the createConnection option above to create the connection
-         * explicitly. We cannot do that in the TLS case because http2.connect
-         * passes necessary additional options to tls.connect.
-         * The first argument just needs to be parseable as a URL and the scheme
-         * determines whether the connection will be established over TLS or not.
-         */
-        const session = http2.connect(addressScheme + targetAuthority, connectionOptions);
-        this.session = session;
-        if (this.channelzEnabled) {
-            this.channelzSocketRef = channelz_1.registerChannelzSocket(this.subchannelAddressString, () => this.getChannelzSocketInfo());
-            this.childrenTracker.refChild(this.channelzSocketRef);
-        }
-        session.unref();
-        /* For all of these events, check if the session at the time of the event
-         * is the same one currently attached to this subchannel, to ensure that
-         * old events from previous connection attempts cannot cause invalid state
-         * transitions. */
-        session.once('connect', () => {
-            if (this.session === session) {
-                this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING], connectivity_state_1.ConnectivityState.READY);
-            }
-        });
-        session.once('close', () => {
-            if (this.session === session) {
-                this.trace('connection closed');
-                this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING], connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE);
-                /* Transitioning directly to IDLE here should be OK because we are not
-                 * doing any backoff, because a connection was established at some
-                 * point */
-                this.transitionToState([connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.IDLE);
-            }
-        });
-        session.once('goaway', (errorCode, lastStreamID, opaqueData) => {
-            if (this.session === session) {
-                /* See the last paragraph of
-                 * https://github.com/grpc/proposal/blob/master/A8-client-side-keepalive.md#basic-keepalive */
-                if (errorCode === http2.constants.NGHTTP2_ENHANCE_YOUR_CALM &&
-                    opaqueData.equals(tooManyPingsData)) {
-                    this.keepaliveTimeMs = Math.min(2 * this.keepaliveTimeMs, KEEPALIVE_MAX_TIME_MS);
-                    logging.log(constants_1.LogVerbosity.ERROR, `Connection to ${uri_parser_1.uriToString(this.channelTarget)} at ${this.subchannelAddressString} rejected by server because of excess pings. Increasing ping interval to ${this.keepaliveTimeMs} ms`);
-                }
-                this.trace('connection closed by GOAWAY with code ' +
-                    errorCode);
-                this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING, connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.IDLE);
-            }
-        });
-        session.once('error', (error) => {
-            /* Do nothing here. Any error should also trigger a close event, which is
-             * where we want to handle that.  */
-            this.trace('connection closed with error ' +
-                error.message);
-        });
-        if (logging.isTracerEnabled(TRACER_NAME)) {
-            session.on('remoteSettings', (settings) => {
-                this.trace('new settings received' +
-                    (this.session !== session ? ' on the old connection' : '') +
-                    ': ' +
-                    JSON.stringify(settings));
-            });
-            session.on('localSettings', (settings) => {
-                this.trace('local settings acknowledged by remote' +
-                    (this.session !== session ? ' on the old connection' : '') +
-                    ': ' +
-                    JSON.stringify(settings));
-            });
-        }
-    }
     startConnectingInternal() {
-        var _a, _b;
-        /* Pass connection options through to the proxy so that it's able to
-         * upgrade it's connection to support tls if needed.
-         * This is a workaround for https://github.com/nodejs/node/issues/32922
-         * See https://github.com/grpc/grpc-node/pull/1369 for more info. */
-        const connectionOptions = this.credentials._getConnectionOptions() || {};
-        if ('secureContext' in connectionOptions) {
-            connectionOptions.ALPNProtocols = ['h2'];
-            // If provided, the value of grpc.ssl_target_name_override should be used
-            // to override the target hostname when checking server identity.
-            // This option is used for testing only.
-            if (this.options['grpc.ssl_target_name_override']) {
-                const sslTargetNameOverride = this.options['grpc.ssl_target_name_override'];
-                connectionOptions.checkServerIdentity = (host, cert) => {
-                    return tls_1.checkServerIdentity(sslTargetNameOverride, cert);
-                };
-                connectionOptions.servername = sslTargetNameOverride;
-            }
-            else {
-                if ('grpc.http_connect_target' in this.options) {
-                    /* This is more or less how servername will be set in createSession
-                     * if a connection is successfully established through the proxy.
-                     * If the proxy is not used, these connectionOptions are discarded
-                     * anyway */
-                    const targetPath = resolver_1.getDefaultAuthority((_a = uri_parser_1.parseUri(this.options['grpc.http_connect_target'])) !== null && _a !== void 0 ? _a : {
-                        path: 'localhost',
-                    });
-                    const hostPort = uri_parser_1.splitHostPort(targetPath);
-                    connectionOptions.servername = (_b = hostPort === null || hostPort === void 0 ? void 0 : hostPort.host) !== null && _b !== void 0 ? _b : targetPath;
-                }
-            }
+        let options = this.options;
+        if (options['grpc.keepalive_time_ms']) {
+            const adjustedKeepaliveTime = Math.min(this.keepaliveTime, KEEPALIVE_MAX_TIME_MS);
+            options = Object.assign(Object.assign({}, options), { 'grpc.keepalive_time_ms': adjustedKeepaliveTime });
         }
-        http_proxy_1.getProxiedConnection(this.subchannelAddress, this.options, connectionOptions).then((result) => {
-            this.createSession(result);
-        }, (reason) => {
+        this.connector
+            .connect(this.subchannelAddress, this.credentials, options)
+            .then(transport => {
+            if (this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING], connectivity_state_1.ConnectivityState.READY)) {
+                this.transport = transport;
+                if (this.channelzEnabled) {
+                    this.childrenTracker.refChild(transport.getChannelzRef());
+                }
+                transport.addDisconnectListener(tooManyPings => {
+                    this.transitionToState([connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.IDLE);
+                    if (tooManyPings && this.keepaliveTime > 0) {
+                        this.keepaliveTime *= 2;
+                        logging.log(constants_1.LogVerbosity.ERROR, `Connection to ${(0, uri_parser_1.uriToString)(this.channelTarget)} at ${this.subchannelAddressString} rejected by server because of excess pings. Increasing ping interval to ${this.keepaliveTime} ms`);
+                    }
+                });
+            }
+        }, error => {
             this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING], connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE);
         });
     }
@@ -12105,6 +13437,7 @@ class Subchannel {
      * @returns True if the state changed, false otherwise
      */
     transitionToState(oldStates, newState) {
+        var _a, _b;
         if (oldStates.indexOf(this.connectivityState) === -1) {
             return false;
         }
@@ -12112,25 +13445,15 @@ class Subchannel {
             ' -> ' +
             connectivity_state_1.ConnectivityState[newState]);
         if (this.channelzEnabled) {
-            this.channelzTrace.addTrace('CT_INFO', connectivity_state_1.ConnectivityState[this.connectivityState] + ' -> ' + connectivity_state_1.ConnectivityState[newState]);
+            this.channelzTrace.addTrace('CT_INFO', connectivity_state_1.ConnectivityState[this.connectivityState] +
+                ' -> ' +
+                connectivity_state_1.ConnectivityState[newState]);
         }
         const previousState = this.connectivityState;
         this.connectivityState = newState;
         switch (newState) {
             case connectivity_state_1.ConnectivityState.READY:
                 this.stopBackoff();
-                const session = this.session;
-                session.socket.once('close', () => {
-                    if (this.session === session) {
-                        this.transitionToState([connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE);
-                        for (const listener of this.disconnectListeners) {
-                            listener();
-                        }
-                    }
-                });
-                if (this.keepaliveWithoutCalls) {
-                    this.startKeepalivePings();
-                }
                 break;
             case connectivity_state_1.ConnectivityState.CONNECTING:
                 this.startBackoff();
@@ -12138,12 +13461,11 @@ class Subchannel {
                 this.continueConnecting = false;
                 break;
             case connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE:
-                if (this.session) {
-                    this.session.close();
+                if (this.channelzEnabled && this.transport) {
+                    this.childrenTracker.unrefChild(this.transport.getChannelzRef());
                 }
-                this.session = null;
-                this.resetChannelzSocketInfo();
-                this.stopKeepalivePings();
+                (_a = this.transport) === null || _a === void 0 ? void 0 : _a.shutdown();
+                this.transport = null;
                 /* If the backoff timer has already ended by the time we get to the
                  * TRANSIENT_FAILURE state, we want to immediately transition out of
                  * TRANSIENT_FAILURE as though the backoff timer is ending right now */
@@ -12154,87 +13476,38 @@ class Subchannel {
                 }
                 break;
             case connectivity_state_1.ConnectivityState.IDLE:
-                if (this.session) {
-                    this.session.close();
+                if (this.channelzEnabled && this.transport) {
+                    this.childrenTracker.unrefChild(this.transport.getChannelzRef());
                 }
-                this.session = null;
-                this.resetChannelzSocketInfo();
-                this.stopKeepalivePings();
+                (_b = this.transport) === null || _b === void 0 ? void 0 : _b.shutdown();
+                this.transport = null;
                 break;
             default:
                 throw new Error(`Invalid state: unknown ConnectivityState ${newState}`);
         }
-        /* We use a shallow copy of the stateListeners array in case a listener
-         * is removed during this iteration */
-        for (const listener of [...this.stateListeners]) {
-            listener(this, previousState, newState);
+        for (const listener of this.stateListeners) {
+            listener(this, previousState, newState, this.keepaliveTime);
         }
         return true;
     }
-    /**
-     * Check if the subchannel associated with zero calls and with zero channels.
-     * If so, shut it down.
-     */
-    checkBothRefcounts() {
-        /* If no calls, channels, or subchannel pools have any more references to
-         * this subchannel, we can be sure it will never be used again. */
-        if (this.callRefcount === 0 && this.refcount === 0) {
-            if (this.channelzEnabled) {
-                this.channelzTrace.addTrace('CT_INFO', 'Shutting down');
-            }
-            this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING, connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE);
-            if (this.channelzEnabled) {
-                channelz_1.unregisterChannelzRef(this.channelzRef);
-            }
-        }
-    }
-    callRef() {
-        this.refTrace('callRefcount ' +
-            this.callRefcount +
-            ' -> ' +
-            (this.callRefcount + 1));
-        if (this.callRefcount === 0) {
-            if (this.session) {
-                this.session.ref();
-            }
-            this.backoffTimeout.ref();
-            if (!this.keepaliveWithoutCalls) {
-                this.startKeepalivePings();
-            }
-        }
-        this.callRefcount += 1;
-    }
-    callUnref() {
-        this.refTrace('callRefcount ' +
-            this.callRefcount +
-            ' -> ' +
-            (this.callRefcount - 1));
-        this.callRefcount -= 1;
-        if (this.callRefcount === 0) {
-            if (this.session) {
-                this.session.unref();
-            }
-            this.backoffTimeout.unref();
-            if (!this.keepaliveWithoutCalls) {
-                this.stopKeepalivePings();
-            }
-            this.checkBothRefcounts();
-        }
-    }
     ref() {
-        this.refTrace('refcount ' +
-            this.refcount +
-            ' -> ' +
-            (this.refcount + 1));
+        this.refTrace('refcount ' + this.refcount + ' -> ' + (this.refcount + 1));
         this.refcount += 1;
     }
     unref() {
-        this.refTrace('refcount ' +
-            this.refcount +
-            ' -> ' +
-            (this.refcount - 1));
+        this.refTrace('refcount ' + this.refcount + ' -> ' + (this.refcount - 1));
         this.refcount -= 1;
-        this.checkBothRefcounts();
+        if (this.refcount === 0) {
+            if (this.channelzEnabled) {
+                this.channelzTrace.addTrace('CT_INFO', 'Shutting down');
+            }
+            if (this.channelzEnabled) {
+                (0, channelz_1.unregisterChannelzRef)(this.channelzRef);
+            }
+            process.nextTick(() => {
+                this.transitionToState([connectivity_state_1.ConnectivityState.CONNECTING, connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.IDLE);
+            });
+        }
     }
     unrefIfOneRef() {
         if (this.refcount === 1) {
@@ -12243,96 +13516,29 @@ class Subchannel {
         }
         return false;
     }
-    /**
-     * Start a stream on the current session with the given `metadata` as headers
-     * and then attach it to the `callStream`. Must only be called if the
-     * subchannel's current connectivity state is READY.
-     * @param metadata
-     * @param callStream
-     */
-    startCallStream(metadata, callStream, extraFilters) {
-        const headers = metadata.toHttp2Headers();
-        headers[HTTP2_HEADER_AUTHORITY] = callStream.getHost();
-        headers[HTTP2_HEADER_USER_AGENT] = this.userAgent;
-        headers[HTTP2_HEADER_CONTENT_TYPE] = 'application/grpc';
-        headers[HTTP2_HEADER_METHOD] = 'POST';
-        headers[HTTP2_HEADER_PATH] = callStream.getMethod();
-        headers[HTTP2_HEADER_TE] = 'trailers';
-        let http2Stream;
-        /* In theory, if an error is thrown by session.request because session has
-         * become unusable (e.g. because it has received a goaway), this subchannel
-         * should soon see the corresponding close or goaway event anyway and leave
-         * READY. But we have seen reports that this does not happen
-         * (https://github.com/googleapis/nodejs-firestore/issues/1023#issuecomment-653204096)
-         * so for defense in depth, we just discard the session when we see an
-         * error here.
-         */
-        try {
-            http2Stream = this.session.request(headers);
+    createCall(metadata, host, method, listener) {
+        if (!this.transport) {
+            throw new Error('Cannot create call, subchannel not READY');
         }
-        catch (e) {
-            this.transitionToState([connectivity_state_1.ConnectivityState.READY], connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE);
-            throw e;
-        }
-        let headersString = '';
-        for (const header of Object.keys(headers)) {
-            headersString += '\t\t' + header + ': ' + headers[header] + '\n';
-        }
-        logging.trace(constants_1.LogVerbosity.DEBUG, 'call_stream', 'Starting stream [' + callStream.getCallNumber() + '] on subchannel ' +
-            '(' + this.channelzRef.id + ') ' +
-            this.subchannelAddressString +
-            ' with headers\n' +
-            headersString);
-        this.flowControlTrace('local window size: ' +
-            this.session.state.localWindowSize +
-            ' remote window size: ' +
-            this.session.state.remoteWindowSize);
-        const streamSession = this.session;
-        this.internalsTrace('session.closed=' +
-            streamSession.closed +
-            ' session.destroyed=' +
-            streamSession.destroyed +
-            ' session.socket.destroyed=' +
-            streamSession.socket.destroyed);
         let statsTracker;
         if (this.channelzEnabled) {
             this.callTracker.addCallStarted();
-            callStream.addStatusWatcher(status => {
-                if (status.code === constants_1.Status.OK) {
-                    this.callTracker.addCallSucceeded();
-                }
-                else {
-                    this.callTracker.addCallFailed();
-                }
-            });
             this.streamTracker.addCallStarted();
-            callStream.addStreamEndWatcher(success => {
-                if (streamSession === this.session) {
-                    if (success) {
-                        this.streamTracker.addCallSucceeded();
+            statsTracker = {
+                onCallEnd: status => {
+                    if (status.code === constants_1.Status.OK) {
+                        this.callTracker.addCallSucceeded();
                     }
                     else {
-                        this.streamTracker.addCallFailed();
+                        this.callTracker.addCallFailed();
                     }
-                }
-            });
-            statsTracker = {
-                addMessageSent: () => {
-                    this.messagesSent += 1;
-                    this.lastMessageSentTimestamp = new Date();
                 },
-                addMessageReceived: () => {
-                    this.messagesReceived += 1;
-                }
             };
         }
         else {
-            statsTracker = {
-                addMessageSent: () => { },
-                addMessageReceived: () => { }
-            };
+            statsTracker = {};
         }
-        callStream.attachHttp2Stream(http2Stream, this, extraFilters, statsTracker);
+        return this.transport.createCall(metadata, host, method, listener, statsTracker);
     }
     /**
      * If the subchannel is currently IDLE, start connecting and switch to the
@@ -12341,15 +13547,17 @@ class Subchannel {
      * Otherwise, do nothing.
      */
     startConnecting() {
-        /* First, try to transition from IDLE to connecting. If that doesn't happen
-         * because the state is not currently IDLE, check if it is
-         * TRANSIENT_FAILURE, and if so indicate that it should go back to
-         * connecting after the backoff timer ends. Otherwise do nothing */
-        if (!this.transitionToState([connectivity_state_1.ConnectivityState.IDLE], connectivity_state_1.ConnectivityState.CONNECTING)) {
-            if (this.connectivityState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
-                this.continueConnecting = true;
+        process.nextTick(() => {
+            /* First, try to transition from IDLE to connecting. If that doesn't happen
+             * because the state is not currently IDLE, check if it is
+             * TRANSIENT_FAILURE, and if so indicate that it should go back to
+             * connecting after the backoff timer ends. Otherwise do nothing */
+            if (!this.transitionToState([connectivity_state_1.ConnectivityState.IDLE], connectivity_state_1.ConnectivityState.CONNECTING)) {
+                if (this.connectivityState === connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE) {
+                    this.continueConnecting = true;
+                }
             }
-        }
+        });
     }
     /**
      * Get the subchannel's current connectivity state.
@@ -12363,7 +13571,7 @@ class Subchannel {
      * @param listener
      */
     addConnectivityStateListener(listener) {
-        this.stateListeners.push(listener);
+        this.stateListeners.add(listener);
     }
     /**
      * Remove a listener previously added with `addConnectivityStateListener`
@@ -12371,26 +13579,16 @@ class Subchannel {
      *     `addConnectivityStateListener`
      */
     removeConnectivityStateListener(listener) {
-        const listenerIndex = this.stateListeners.indexOf(listener);
-        if (listenerIndex > -1) {
-            this.stateListeners.splice(listenerIndex, 1);
-        }
-    }
-    addDisconnectListener(listener) {
-        this.disconnectListeners.push(listener);
-    }
-    removeDisconnectListener(listener) {
-        const listenerIndex = this.disconnectListeners.indexOf(listener);
-        if (listenerIndex > -1) {
-            this.disconnectListeners.splice(listenerIndex, 1);
-        }
+        this.stateListeners.delete(listener);
     }
     /**
      * Reset the backoff timeout, and immediately start connecting if in backoff.
      */
     resetBackoff() {
-        this.backoffTimeout.reset();
-        this.transitionToState([connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE], connectivity_state_1.ConnectivityState.CONNECTING);
+        process.nextTick(() => {
+            this.backoffTimeout.reset();
+            this.transitionToState([connectivity_state_1.ConnectivityState.TRANSIENT_FAILURE], connectivity_state_1.ConnectivityState.CONNECTING);
+        });
     }
     getAddress() {
         return this.subchannelAddressString;
@@ -12400,6 +13598,14 @@ class Subchannel {
     }
     getRealSubchannel() {
         return this;
+    }
+    realSubchannelEquals(other) {
+        return other.getRealSubchannel() === this;
+    }
+    throttleKeepalive(newKeepaliveTime) {
+        if (newKeepaliveTime > this.keepaliveTime) {
+            this.keepaliveTime = newKeepaliveTime;
+        }
     }
 }
 exports.Subchannel = Subchannel;
@@ -12445,6 +13651,643 @@ function getDefaultRootsData() {
 }
 exports.getDefaultRootsData = getDefaultRootsData;
 //# sourceMappingURL=tls-helpers.js.map
+
+/***/ }),
+
+/***/ 6690:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+/*
+ * Copyright 2023 gRPC authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Http2SubchannelConnector = void 0;
+const http2 = __nccwpck_require__(5158);
+const tls_1 = __nccwpck_require__(4404);
+const channelz_1 = __nccwpck_require__(9975);
+const constants_1 = __nccwpck_require__(634);
+const http_proxy_1 = __nccwpck_require__(4000);
+const logging = __nccwpck_require__(5993);
+const resolver_1 = __nccwpck_require__(1594);
+const subchannel_address_1 = __nccwpck_require__(9905);
+const uri_parser_1 = __nccwpck_require__(5974);
+const net = __nccwpck_require__(1808);
+const subchannel_call_1 = __nccwpck_require__(6940);
+const call_number_1 = __nccwpck_require__(380);
+const TRACER_NAME = 'transport';
+const FLOW_CONTROL_TRACER_NAME = 'transport_flowctrl';
+const clientVersion = (__nccwpck_require__(6569)/* .version */ .i8);
+const { HTTP2_HEADER_AUTHORITY, HTTP2_HEADER_CONTENT_TYPE, HTTP2_HEADER_METHOD, HTTP2_HEADER_PATH, HTTP2_HEADER_TE, HTTP2_HEADER_USER_AGENT, } = http2.constants;
+const KEEPALIVE_TIMEOUT_MS = 20000;
+const tooManyPingsData = Buffer.from('too_many_pings', 'ascii');
+class Http2Transport {
+    constructor(session, subchannelAddress, options, 
+    /**
+     * Name of the remote server, if it is not the same as the subchannel
+     * address, i.e. if connecting through an HTTP CONNECT proxy.
+     */
+    remoteName) {
+        this.session = session;
+        this.remoteName = remoteName;
+        /**
+         * The amount of time in between sending pings
+         */
+        this.keepaliveTimeMs = -1;
+        /**
+         * The amount of time to wait for an acknowledgement after sending a ping
+         */
+        this.keepaliveTimeoutMs = KEEPALIVE_TIMEOUT_MS;
+        /**
+         * Timer reference for timeout that indicates when to send the next ping
+         */
+        this.keepaliveTimerId = null;
+        /**
+         * Indicates that the keepalive timer ran out while there were no active
+         * calls, and a ping should be sent the next time a call starts.
+         */
+        this.pendingSendKeepalivePing = false;
+        /**
+         * Timer reference tracking when the most recent ping will be considered lost
+         */
+        this.keepaliveTimeoutId = null;
+        /**
+         * Indicates whether keepalive pings should be sent without any active calls
+         */
+        this.keepaliveWithoutCalls = false;
+        this.activeCalls = new Set();
+        this.disconnectListeners = [];
+        this.disconnectHandled = false;
+        this.channelzEnabled = true;
+        this.streamTracker = new channelz_1.ChannelzCallTracker();
+        this.keepalivesSent = 0;
+        this.messagesSent = 0;
+        this.messagesReceived = 0;
+        this.lastMessageSentTimestamp = null;
+        this.lastMessageReceivedTimestamp = null;
+        /* Populate subchannelAddressString and channelzRef before doing anything
+         * else, because they are used in the trace methods. */
+        this.subchannelAddressString = (0, subchannel_address_1.subchannelAddressToString)(subchannelAddress);
+        if (options['grpc.enable_channelz'] === 0) {
+            this.channelzEnabled = false;
+        }
+        this.channelzRef = (0, channelz_1.registerChannelzSocket)(this.subchannelAddressString, () => this.getChannelzInfo(), this.channelzEnabled);
+        // Build user-agent string.
+        this.userAgent = [
+            options['grpc.primary_user_agent'],
+            `grpc-node-js/${clientVersion}`,
+            options['grpc.secondary_user_agent'],
+        ]
+            .filter(e => e)
+            .join(' '); // remove falsey values first
+        if ('grpc.keepalive_time_ms' in options) {
+            this.keepaliveTimeMs = options['grpc.keepalive_time_ms'];
+        }
+        if ('grpc.keepalive_timeout_ms' in options) {
+            this.keepaliveTimeoutMs = options['grpc.keepalive_timeout_ms'];
+        }
+        if ('grpc.keepalive_permit_without_calls' in options) {
+            this.keepaliveWithoutCalls =
+                options['grpc.keepalive_permit_without_calls'] === 1;
+        }
+        else {
+            this.keepaliveWithoutCalls = false;
+        }
+        session.once('close', () => {
+            this.trace('session closed');
+            this.stopKeepalivePings();
+            this.handleDisconnect();
+        });
+        session.once('goaway', (errorCode, lastStreamID, opaqueData) => {
+            let tooManyPings = false;
+            /* See the last paragraph of
+             * https://github.com/grpc/proposal/blob/master/A8-client-side-keepalive.md#basic-keepalive */
+            if (errorCode === http2.constants.NGHTTP2_ENHANCE_YOUR_CALM &&
+                opaqueData.equals(tooManyPingsData)) {
+                tooManyPings = true;
+            }
+            this.trace('connection closed by GOAWAY with code ' + errorCode);
+            this.reportDisconnectToOwner(tooManyPings);
+        });
+        session.once('error', error => {
+            /* Do nothing here. Any error should also trigger a close event, which is
+             * where we want to handle that.  */
+            this.trace('connection closed with error ' + error.message);
+        });
+        if (logging.isTracerEnabled(TRACER_NAME)) {
+            session.on('remoteSettings', (settings) => {
+                this.trace('new settings received' +
+                    (this.session !== session ? ' on the old connection' : '') +
+                    ': ' +
+                    JSON.stringify(settings));
+            });
+            session.on('localSettings', (settings) => {
+                this.trace('local settings acknowledged by remote' +
+                    (this.session !== session ? ' on the old connection' : '') +
+                    ': ' +
+                    JSON.stringify(settings));
+            });
+        }
+        /* Start the keepalive timer last, because this can trigger trace logs,
+         * which should only happen after everything else is set up. */
+        if (this.keepaliveWithoutCalls) {
+            this.maybeStartKeepalivePingTimer();
+        }
+    }
+    getChannelzInfo() {
+        var _a, _b, _c;
+        const sessionSocket = this.session.socket;
+        const remoteAddress = sessionSocket.remoteAddress
+            ? (0, subchannel_address_1.stringToSubchannelAddress)(sessionSocket.remoteAddress, sessionSocket.remotePort)
+            : null;
+        const localAddress = sessionSocket.localAddress
+            ? (0, subchannel_address_1.stringToSubchannelAddress)(sessionSocket.localAddress, sessionSocket.localPort)
+            : null;
+        let tlsInfo;
+        if (this.session.encrypted) {
+            const tlsSocket = sessionSocket;
+            const cipherInfo = tlsSocket.getCipher();
+            const certificate = tlsSocket.getCertificate();
+            const peerCertificate = tlsSocket.getPeerCertificate();
+            tlsInfo = {
+                cipherSuiteStandardName: (_a = cipherInfo.standardName) !== null && _a !== void 0 ? _a : null,
+                cipherSuiteOtherName: cipherInfo.standardName ? null : cipherInfo.name,
+                localCertificate: certificate && 'raw' in certificate ? certificate.raw : null,
+                remoteCertificate: peerCertificate && 'raw' in peerCertificate
+                    ? peerCertificate.raw
+                    : null,
+            };
+        }
+        else {
+            tlsInfo = null;
+        }
+        const socketInfo = {
+            remoteAddress: remoteAddress,
+            localAddress: localAddress,
+            security: tlsInfo,
+            remoteName: this.remoteName,
+            streamsStarted: this.streamTracker.callsStarted,
+            streamsSucceeded: this.streamTracker.callsSucceeded,
+            streamsFailed: this.streamTracker.callsFailed,
+            messagesSent: this.messagesSent,
+            messagesReceived: this.messagesReceived,
+            keepAlivesSent: this.keepalivesSent,
+            lastLocalStreamCreatedTimestamp: this.streamTracker.lastCallStartedTimestamp,
+            lastRemoteStreamCreatedTimestamp: null,
+            lastMessageSentTimestamp: this.lastMessageSentTimestamp,
+            lastMessageReceivedTimestamp: this.lastMessageReceivedTimestamp,
+            localFlowControlWindow: (_b = this.session.state.localWindowSize) !== null && _b !== void 0 ? _b : null,
+            remoteFlowControlWindow: (_c = this.session.state.remoteWindowSize) !== null && _c !== void 0 ? _c : null,
+        };
+        return socketInfo;
+    }
+    trace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, '(' +
+            this.channelzRef.id +
+            ') ' +
+            this.subchannelAddressString +
+            ' ' +
+            text);
+    }
+    keepaliveTrace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, 'keepalive', '(' +
+            this.channelzRef.id +
+            ') ' +
+            this.subchannelAddressString +
+            ' ' +
+            text);
+    }
+    flowControlTrace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, FLOW_CONTROL_TRACER_NAME, '(' +
+            this.channelzRef.id +
+            ') ' +
+            this.subchannelAddressString +
+            ' ' +
+            text);
+    }
+    internalsTrace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, 'transport_internals', '(' +
+            this.channelzRef.id +
+            ') ' +
+            this.subchannelAddressString +
+            ' ' +
+            text);
+    }
+    /**
+     * Indicate to the owner of this object that this transport should no longer
+     * be used. That happens if the connection drops, or if the server sends a
+     * GOAWAY.
+     * @param tooManyPings If true, this was triggered by a GOAWAY with data
+     * indicating that the session was closed becaues the client sent too many
+     * pings.
+     * @returns
+     */
+    reportDisconnectToOwner(tooManyPings) {
+        if (this.disconnectHandled) {
+            return;
+        }
+        this.disconnectHandled = true;
+        this.disconnectListeners.forEach(listener => listener(tooManyPings));
+    }
+    /**
+     * Handle connection drops, but not GOAWAYs.
+     */
+    handleDisconnect() {
+        this.reportDisconnectToOwner(false);
+        /* Give calls an event loop cycle to finish naturally before reporting the
+         * disconnnection to them. */
+        setImmediate(() => {
+            for (const call of this.activeCalls) {
+                call.onDisconnect();
+            }
+        });
+    }
+    addDisconnectListener(listener) {
+        this.disconnectListeners.push(listener);
+    }
+    clearKeepaliveTimer() {
+        if (!this.keepaliveTimerId) {
+            return;
+        }
+        clearTimeout(this.keepaliveTimerId);
+        this.keepaliveTimerId = null;
+    }
+    clearKeepaliveTimeout() {
+        if (!this.keepaliveTimeoutId) {
+            return;
+        }
+        clearTimeout(this.keepaliveTimeoutId);
+        this.keepaliveTimeoutId = null;
+    }
+    canSendPing() {
+        return (this.keepaliveTimeMs > 0 &&
+            (this.keepaliveWithoutCalls || this.activeCalls.size > 0));
+    }
+    maybeSendPing() {
+        var _a, _b;
+        this.clearKeepaliveTimer();
+        if (!this.canSendPing()) {
+            this.pendingSendKeepalivePing = true;
+            return;
+        }
+        if (this.channelzEnabled) {
+            this.keepalivesSent += 1;
+        }
+        this.keepaliveTrace('Sending ping with timeout ' + this.keepaliveTimeoutMs + 'ms');
+        if (!this.keepaliveTimeoutId) {
+            this.keepaliveTimeoutId = setTimeout(() => {
+                this.keepaliveTrace('Ping timeout passed without response');
+                this.handleDisconnect();
+            }, this.keepaliveTimeoutMs);
+            (_b = (_a = this.keepaliveTimeoutId).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+        }
+        try {
+            this.session.ping((err, duration, payload) => {
+                this.keepaliveTrace('Received ping response');
+                this.clearKeepaliveTimeout();
+                this.maybeStartKeepalivePingTimer();
+            });
+        }
+        catch (e) {
+            /* If we fail to send a ping, the connection is no longer functional, so
+             * we should discard it. */
+            this.handleDisconnect();
+        }
+    }
+    /**
+     * Starts the keepalive ping timer if appropriate. If the timer already ran
+     * out while there were no active requests, instead send a ping immediately.
+     * If the ping timer is already running or a ping is currently in flight,
+     * instead do nothing and wait for them to resolve.
+     */
+    maybeStartKeepalivePingTimer() {
+        var _a, _b;
+        if (!this.canSendPing()) {
+            return;
+        }
+        if (this.pendingSendKeepalivePing) {
+            this.pendingSendKeepalivePing = false;
+            this.maybeSendPing();
+        }
+        else if (!this.keepaliveTimerId && !this.keepaliveTimeoutId) {
+            this.keepaliveTrace('Starting keepalive timer for ' + this.keepaliveTimeMs + 'ms');
+            this.keepaliveTimerId = (_b = (_a = setTimeout(() => {
+                this.maybeSendPing();
+            }, this.keepaliveTimeMs)).unref) === null || _b === void 0 ? void 0 : _b.call(_a);
+        }
+        /* Otherwise, there is already either a keepalive timer or a ping pending,
+         * wait for those to resolve. */
+    }
+    stopKeepalivePings() {
+        if (this.keepaliveTimerId) {
+            clearTimeout(this.keepaliveTimerId);
+            this.keepaliveTimerId = null;
+        }
+        this.clearKeepaliveTimeout();
+    }
+    removeActiveCall(call) {
+        this.activeCalls.delete(call);
+        if (this.activeCalls.size === 0) {
+            this.session.unref();
+        }
+    }
+    addActiveCall(call) {
+        this.activeCalls.add(call);
+        if (this.activeCalls.size === 1) {
+            this.session.ref();
+            if (!this.keepaliveWithoutCalls) {
+                this.maybeStartKeepalivePingTimer();
+            }
+        }
+    }
+    createCall(metadata, host, method, listener, subchannelCallStatsTracker) {
+        const headers = metadata.toHttp2Headers();
+        headers[HTTP2_HEADER_AUTHORITY] = host;
+        headers[HTTP2_HEADER_USER_AGENT] = this.userAgent;
+        headers[HTTP2_HEADER_CONTENT_TYPE] = 'application/grpc';
+        headers[HTTP2_HEADER_METHOD] = 'POST';
+        headers[HTTP2_HEADER_PATH] = method;
+        headers[HTTP2_HEADER_TE] = 'trailers';
+        let http2Stream;
+        /* In theory, if an error is thrown by session.request because session has
+         * become unusable (e.g. because it has received a goaway), this subchannel
+         * should soon see the corresponding close or goaway event anyway and leave
+         * READY. But we have seen reports that this does not happen
+         * (https://github.com/googleapis/nodejs-firestore/issues/1023#issuecomment-653204096)
+         * so for defense in depth, we just discard the session when we see an
+         * error here.
+         */
+        try {
+            http2Stream = this.session.request(headers);
+        }
+        catch (e) {
+            this.handleDisconnect();
+            throw e;
+        }
+        this.flowControlTrace('local window size: ' +
+            this.session.state.localWindowSize +
+            ' remote window size: ' +
+            this.session.state.remoteWindowSize);
+        this.internalsTrace('session.closed=' +
+            this.session.closed +
+            ' session.destroyed=' +
+            this.session.destroyed +
+            ' session.socket.destroyed=' +
+            this.session.socket.destroyed);
+        let eventTracker;
+        // eslint-disable-next-line prefer-const
+        let call;
+        if (this.channelzEnabled) {
+            this.streamTracker.addCallStarted();
+            eventTracker = {
+                addMessageSent: () => {
+                    var _a;
+                    this.messagesSent += 1;
+                    this.lastMessageSentTimestamp = new Date();
+                    (_a = subchannelCallStatsTracker.addMessageSent) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker);
+                },
+                addMessageReceived: () => {
+                    var _a;
+                    this.messagesReceived += 1;
+                    this.lastMessageReceivedTimestamp = new Date();
+                    (_a = subchannelCallStatsTracker.addMessageReceived) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker);
+                },
+                onCallEnd: status => {
+                    var _a;
+                    (_a = subchannelCallStatsTracker.onCallEnd) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker, status);
+                    this.removeActiveCall(call);
+                },
+                onStreamEnd: success => {
+                    var _a;
+                    if (success) {
+                        this.streamTracker.addCallSucceeded();
+                    }
+                    else {
+                        this.streamTracker.addCallFailed();
+                    }
+                    (_a = subchannelCallStatsTracker.onStreamEnd) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker, success);
+                },
+            };
+        }
+        else {
+            eventTracker = {
+                addMessageSent: () => {
+                    var _a;
+                    (_a = subchannelCallStatsTracker.addMessageSent) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker);
+                },
+                addMessageReceived: () => {
+                    var _a;
+                    (_a = subchannelCallStatsTracker.addMessageReceived) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker);
+                },
+                onCallEnd: status => {
+                    var _a;
+                    (_a = subchannelCallStatsTracker.onCallEnd) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker, status);
+                    this.removeActiveCall(call);
+                },
+                onStreamEnd: success => {
+                    var _a;
+                    (_a = subchannelCallStatsTracker.onStreamEnd) === null || _a === void 0 ? void 0 : _a.call(subchannelCallStatsTracker, success);
+                },
+            };
+        }
+        call = new subchannel_call_1.Http2SubchannelCall(http2Stream, eventTracker, listener, this, (0, call_number_1.getNextCallNumber)());
+        this.addActiveCall(call);
+        return call;
+    }
+    getChannelzRef() {
+        return this.channelzRef;
+    }
+    getPeerName() {
+        return this.subchannelAddressString;
+    }
+    shutdown() {
+        this.session.close();
+        (0, channelz_1.unregisterChannelzRef)(this.channelzRef);
+    }
+}
+class Http2SubchannelConnector {
+    constructor(channelTarget) {
+        this.channelTarget = channelTarget;
+        this.session = null;
+        this.isShutdown = false;
+    }
+    trace(text) {
+        logging.trace(constants_1.LogVerbosity.DEBUG, TRACER_NAME, (0, uri_parser_1.uriToString)(this.channelTarget) + ' ' + text);
+    }
+    createSession(address, credentials, options, proxyConnectionResult) {
+        if (this.isShutdown) {
+            return Promise.reject();
+        }
+        return new Promise((resolve, reject) => {
+            var _a, _b, _c;
+            let remoteName;
+            if (proxyConnectionResult.realTarget) {
+                remoteName = (0, uri_parser_1.uriToString)(proxyConnectionResult.realTarget);
+                this.trace('creating HTTP/2 session through proxy to ' +
+                    (0, uri_parser_1.uriToString)(proxyConnectionResult.realTarget));
+            }
+            else {
+                remoteName = null;
+                this.trace('creating HTTP/2 session to ' + (0, subchannel_address_1.subchannelAddressToString)(address));
+            }
+            const targetAuthority = (0, resolver_1.getDefaultAuthority)((_a = proxyConnectionResult.realTarget) !== null && _a !== void 0 ? _a : this.channelTarget);
+            let connectionOptions = credentials._getConnectionOptions() || {};
+            connectionOptions.maxSendHeaderBlockLength = Number.MAX_SAFE_INTEGER;
+            if ('grpc-node.max_session_memory' in options) {
+                connectionOptions.maxSessionMemory =
+                    options['grpc-node.max_session_memory'];
+            }
+            else {
+                /* By default, set a very large max session memory limit, to effectively
+                 * disable enforcement of the limit. Some testing indicates that Node's
+                 * behavior degrades badly when this limit is reached, so we solve that
+                 * by disabling the check entirely. */
+                connectionOptions.maxSessionMemory = Number.MAX_SAFE_INTEGER;
+            }
+            let addressScheme = 'http://';
+            if ('secureContext' in connectionOptions) {
+                addressScheme = 'https://';
+                // If provided, the value of grpc.ssl_target_name_override should be used
+                // to override the target hostname when checking server identity.
+                // This option is used for testing only.
+                if (options['grpc.ssl_target_name_override']) {
+                    const sslTargetNameOverride = options['grpc.ssl_target_name_override'];
+                    connectionOptions.checkServerIdentity = (host, cert) => {
+                        return (0, tls_1.checkServerIdentity)(sslTargetNameOverride, cert);
+                    };
+                    connectionOptions.servername = sslTargetNameOverride;
+                }
+                else {
+                    const authorityHostname = (_c = (_b = (0, uri_parser_1.splitHostPort)(targetAuthority)) === null || _b === void 0 ? void 0 : _b.host) !== null && _c !== void 0 ? _c : 'localhost';
+                    // We want to always set servername to support SNI
+                    connectionOptions.servername = authorityHostname;
+                }
+                if (proxyConnectionResult.socket) {
+                    /* This is part of the workaround for
+                     * https://github.com/nodejs/node/issues/32922. Without that bug,
+                     * proxyConnectionResult.socket would always be a plaintext socket and
+                     * this would say
+                     * connectionOptions.socket = proxyConnectionResult.socket; */
+                    connectionOptions.createConnection = (authority, option) => {
+                        return proxyConnectionResult.socket;
+                    };
+                }
+            }
+            else {
+                /* In all but the most recent versions of Node, http2.connect does not use
+                 * the options when establishing plaintext connections, so we need to
+                 * establish that connection explicitly. */
+                connectionOptions.createConnection = (authority, option) => {
+                    if (proxyConnectionResult.socket) {
+                        return proxyConnectionResult.socket;
+                    }
+                    else {
+                        /* net.NetConnectOpts is declared in a way that is more restrictive
+                         * than what net.connect will actually accept, so we use the type
+                         * assertion to work around that. */
+                        return net.connect(address);
+                    }
+                };
+            }
+            connectionOptions = Object.assign(Object.assign(Object.assign({}, connectionOptions), address), { enableTrace: options['grpc-node.tls_enable_trace'] === 1 });
+            /* http2.connect uses the options here:
+             * https://github.com/nodejs/node/blob/70c32a6d190e2b5d7b9ff9d5b6a459d14e8b7d59/lib/internal/http2/core.js#L3028-L3036
+             * The spread operator overides earlier values with later ones, so any port
+             * or host values in the options will be used rather than any values extracted
+             * from the first argument. In addition, the path overrides the host and port,
+             * as documented for plaintext connections here:
+             * https://nodejs.org/api/net.html#net_socket_connect_options_connectlistener
+             * and for TLS connections here:
+             * https://nodejs.org/api/tls.html#tls_tls_connect_options_callback. In
+             * earlier versions of Node, http2.connect passes these options to
+             * tls.connect but not net.connect, so in the insecure case we still need
+             * to set the createConnection option above to create the connection
+             * explicitly. We cannot do that in the TLS case because http2.connect
+             * passes necessary additional options to tls.connect.
+             * The first argument just needs to be parseable as a URL and the scheme
+             * determines whether the connection will be established over TLS or not.
+             */
+            const session = http2.connect(addressScheme + targetAuthority, connectionOptions);
+            this.session = session;
+            session.unref();
+            session.once('connect', () => {
+                session.removeAllListeners();
+                resolve(new Http2Transport(session, address, options, remoteName));
+                this.session = null;
+            });
+            session.once('close', () => {
+                this.session = null;
+                reject();
+            });
+            session.once('error', error => {
+                this.trace('connection failed with error ' + error.message);
+            });
+        });
+    }
+    connect(address, credentials, options) {
+        var _a, _b;
+        if (this.isShutdown) {
+            return Promise.reject();
+        }
+        /* Pass connection options through to the proxy so that it's able to
+         * upgrade it's connection to support tls if needed.
+         * This is a workaround for https://github.com/nodejs/node/issues/32922
+         * See https://github.com/grpc/grpc-node/pull/1369 for more info. */
+        const connectionOptions = credentials._getConnectionOptions() || {};
+        if ('secureContext' in connectionOptions) {
+            connectionOptions.ALPNProtocols = ['h2'];
+            // If provided, the value of grpc.ssl_target_name_override should be used
+            // to override the target hostname when checking server identity.
+            // This option is used for testing only.
+            if (options['grpc.ssl_target_name_override']) {
+                const sslTargetNameOverride = options['grpc.ssl_target_name_override'];
+                connectionOptions.checkServerIdentity = (host, cert) => {
+                    return (0, tls_1.checkServerIdentity)(sslTargetNameOverride, cert);
+                };
+                connectionOptions.servername = sslTargetNameOverride;
+            }
+            else {
+                if ('grpc.http_connect_target' in options) {
+                    /* This is more or less how servername will be set in createSession
+                     * if a connection is successfully established through the proxy.
+                     * If the proxy is not used, these connectionOptions are discarded
+                     * anyway */
+                    const targetPath = (0, resolver_1.getDefaultAuthority)((_a = (0, uri_parser_1.parseUri)(options['grpc.http_connect_target'])) !== null && _a !== void 0 ? _a : {
+                        path: 'localhost',
+                    });
+                    const hostPort = (0, uri_parser_1.splitHostPort)(targetPath);
+                    connectionOptions.servername = (_b = hostPort === null || hostPort === void 0 ? void 0 : hostPort.host) !== null && _b !== void 0 ? _b : targetPath;
+                }
+            }
+            if (options['grpc-node.tls_enable_trace']) {
+                connectionOptions.enableTrace = true;
+            }
+        }
+        return (0, http_proxy_1.getProxiedConnection)(address, options, connectionOptions).then(result => this.createSession(address, credentials, options, result));
+    }
+    shutdown() {
+        var _a;
+        this.isShutdown = true;
+        (_a = this.session) === null || _a === void 0 ? void 0 : _a.close();
+        this.session = null;
+    }
+}
+exports.Http2SubchannelConnector = Http2SubchannelConnector;
+//# sourceMappingURL=transport.js.map
 
 /***/ }),
 
@@ -12590,10 +14433,13 @@ var __webpack_unused_export__;
  *
  */
 __webpack_unused_export__ = ({ value: true });
+__webpack_unused_export__ = __webpack_unused_export__ = __webpack_unused_export__ = exports.J_ = __webpack_unused_export__ = __webpack_unused_export__ = __webpack_unused_export__ = void 0;
 const camelCase = __nccwpck_require__(7994);
 const Protobuf = __nccwpck_require__(5881);
 const descriptor = __nccwpck_require__(1629);
 const util_1 = __nccwpck_require__(3245);
+const Long = __nccwpck_require__(3482);
+__webpack_unused_export__ = Long;
 function isAnyExtension(obj) {
     return ('@type' in obj) && (typeof obj['@type'] === 'string');
 }
@@ -12758,13 +14604,13 @@ function createPackageDefinitionFromDescriptorSet(decodedDescriptorSet, options)
  * @param options.includeDirs Paths to search for imported `.proto` files.
  */
 function load(filename, options) {
-    return util_1.loadProtosWithOptions(filename, options).then(loadedRoot => {
+    return (0, util_1.loadProtosWithOptions)(filename, options).then(loadedRoot => {
         return createPackageDefinition(loadedRoot, options);
     });
 }
 __webpack_unused_export__ = load;
 function loadSync(filename, options) {
-    const loadedRoot = util_1.loadProtosWithOptionsSync(filename, options);
+    const loadedRoot = (0, util_1.loadProtosWithOptionsSync)(filename, options);
     return createPackageDefinition(loadedRoot, options);
 }
 exports.J_ = loadSync;
@@ -12785,7 +14631,7 @@ function loadFileDescriptorSetFromObject(descriptorSet, options) {
     return createPackageDefinitionFromDescriptorSet(decodedDescriptorSet, options);
 }
 __webpack_unused_export__ = loadFileDescriptorSetFromObject;
-util_1.addCommonProtos();
+(0, util_1.addCommonProtos)();
 //# sourceMappingURL=index.js.map
 
 /***/ }),
@@ -12813,6 +14659,7 @@ util_1.addCommonProtos();
  *
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.addCommonProtos = exports.loadProtosWithOptionsSync = exports.loadProtosWithOptions = void 0;
 const fs = __nccwpck_require__(7147);
 const path = __nccwpck_require__(1017);
 const Protobuf = __nccwpck_require__(5881);
@@ -19187,7 +21034,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.MetadataTokenService = void 0;
-const node_fetch_1 = __importDefault(__nccwpck_require__(401));
+const node_fetch_1 = __importDefault(__nccwpck_require__(4429));
 class MetadataTokenService {
     constructor() {
         this.url =
@@ -21333,25 +23180,42 @@ const delay_1 = __nccwpck_require__(6449);
 const AbortError_1 = __nccwpck_require__(6489);
 /**
  * Retry function with exponential backoff.
+ *
+ * The function receives AbortSignal, attempt number starting with 0, and reset
+ * function that sets attempt number to -1 so that the next attempt will be
+ * made without delay.
  */
 async function retry(signal, fn, options = {}) {
     const { baseMs = 1000, maxDelayMs = 15000, onError, maxAttempts = Infinity, } = options;
-    for (let attempt = 0;; attempt++) {
+    let attempt = 0;
+    const reset = () => {
+        attempt = -1;
+    };
+    while (true) {
         try {
-            return await fn(signal, attempt);
+            return await fn(signal, attempt, reset);
         }
         catch (error) {
             AbortError_1.rethrowAbortError(error);
             if (attempt >= maxAttempts) {
                 throw error;
             }
-            // https://aws.amazon.com/ru/blogs/architecture/exponential-backoff-and-jitter/
-            const backoff = Math.min(maxDelayMs, Math.pow(2, attempt) * baseMs);
-            const delayMs = Math.round((backoff * (1 + Math.random())) / 2);
+            let delayMs;
+            if (attempt === -1) {
+                delayMs = 0;
+            }
+            else {
+                // https://aws.amazon.com/ru/blogs/architecture/exponential-backoff-and-jitter/
+                const backoff = Math.min(maxDelayMs, Math.pow(2, attempt) * baseMs);
+                delayMs = Math.round((backoff * (1 + Math.random())) / 2);
+            }
             if (onError) {
                 onError(error, attempt, delayMs);
             }
-            await delay_1.delay(signal, delayMs);
+            if (delayMs !== 0) {
+                await delay_1.delay(signal, delayMs);
+            }
+            attempt += 1;
         }
     }
 }
@@ -22136,10 +24000,38 @@ var MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER ||
 // Max safe segment length for coercion.
 var MAX_SAFE_COMPONENT_LENGTH = 16
 
+var MAX_SAFE_BUILD_LENGTH = MAX_LENGTH - 6
+
 // The actual regexps go on exports.re
 var re = exports.re = []
+var safeRe = exports.safeRe = []
 var src = exports.src = []
 var R = 0
+
+var LETTERDASHNUMBER = '[a-zA-Z0-9-]'
+
+// Replace some greedy regex tokens to prevent regex dos issues. These regex are
+// used internally via the safeRe object since all inputs in this library get
+// normalized first to trim and collapse all extra whitespace. The original
+// regexes are exported for userland consumption and lower level usage. A
+// future breaking change could export the safer regex only with a note that
+// all input should have extra whitespace removed.
+var safeRegexReplacements = [
+  ['\\s', 1],
+  ['\\d', MAX_LENGTH],
+  [LETTERDASHNUMBER, MAX_SAFE_BUILD_LENGTH],
+]
+
+function makeSafeRe (value) {
+  for (var i = 0; i < safeRegexReplacements.length; i++) {
+    var token = safeRegexReplacements[i][0]
+    var max = safeRegexReplacements[i][1]
+    value = value
+      .split(token + '*').join(token + '{0,' + max + '}')
+      .split(token + '+').join(token + '{1,' + max + '}')
+  }
+  return value
+}
 
 // The following Regular Expressions can be used for tokenizing,
 // validating, and parsing SemVer version strings.
@@ -22150,14 +24042,14 @@ var R = 0
 var NUMERICIDENTIFIER = R++
 src[NUMERICIDENTIFIER] = '0|[1-9]\\d*'
 var NUMERICIDENTIFIERLOOSE = R++
-src[NUMERICIDENTIFIERLOOSE] = '[0-9]+'
+src[NUMERICIDENTIFIERLOOSE] = '\\d+'
 
 // ## Non-numeric Identifier
 // Zero or more digits, followed by a letter or hyphen, and then zero or
 // more letters, digits, or hyphens.
 
 var NONNUMERICIDENTIFIER = R++
-src[NONNUMERICIDENTIFIER] = '\\d*[a-zA-Z-][a-zA-Z0-9-]*'
+src[NONNUMERICIDENTIFIER] = '\\d*[a-zA-Z-]' + LETTERDASHNUMBER + '*'
 
 // ## Main Version
 // Three dot-separated numeric identifiers.
@@ -22199,7 +24091,7 @@ src[PRERELEASELOOSE] = '(?:-?(' + src[PRERELEASEIDENTIFIERLOOSE] +
 // Any combination of digits, letters, or hyphens.
 
 var BUILDIDENTIFIER = R++
-src[BUILDIDENTIFIER] = '[0-9A-Za-z-]+'
+src[BUILDIDENTIFIER] = LETTERDASHNUMBER + '+'
 
 // ## Build Metadata
 // Plus sign, followed by one or more period-separated build metadata
@@ -22284,6 +24176,7 @@ src[LONETILDE] = '(?:~>?)'
 var TILDETRIM = R++
 src[TILDETRIM] = '(\\s*)' + src[LONETILDE] + '\\s+'
 re[TILDETRIM] = new RegExp(src[TILDETRIM], 'g')
+safeRe[TILDETRIM] = new RegExp(makeSafeRe(src[TILDETRIM]), 'g')
 var tildeTrimReplace = '$1~'
 
 var TILDE = R++
@@ -22299,6 +24192,7 @@ src[LONECARET] = '(?:\\^)'
 var CARETTRIM = R++
 src[CARETTRIM] = '(\\s*)' + src[LONECARET] + '\\s+'
 re[CARETTRIM] = new RegExp(src[CARETTRIM], 'g')
+safeRe[CARETTRIM] = new RegExp(makeSafeRe(src[CARETTRIM]), 'g')
 var caretTrimReplace = '$1^'
 
 var CARET = R++
@@ -22320,6 +24214,7 @@ src[COMPARATORTRIM] = '(\\s*)' + src[GTLT] +
 
 // this one has to use the /g flag
 re[COMPARATORTRIM] = new RegExp(src[COMPARATORTRIM], 'g')
+safeRe[COMPARATORTRIM] = new RegExp(makeSafeRe(src[COMPARATORTRIM]), 'g')
 var comparatorTrimReplace = '$1$2$3'
 
 // Something like `1.2.3 - 1.2.4`
@@ -22348,6 +24243,14 @@ for (var i = 0; i < R; i++) {
   debug(i, src[i])
   if (!re[i]) {
     re[i] = new RegExp(src[i])
+
+    // Replace all greedy whitespace to prevent regex dos issues. These regex are
+    // used internally via the safeRe object since all inputs in this library get
+    // normalized first to trim and collapse all extra whitespace. The original
+    // regexes are exported for userland consumption and lower level usage. A
+    // future breaking change could export the safer regex only with a note that
+    // all input should have extra whitespace removed.
+    safeRe[i] = new RegExp(makeSafeRe(src[i]))
   }
 }
 
@@ -22372,7 +24275,7 @@ function parse (version, options) {
     return null
   }
 
-  var r = options.loose ? re[LOOSE] : re[FULL]
+  var r = options.loose ? safeRe[LOOSE] : safeRe[FULL]
   if (!r.test(version)) {
     return null
   }
@@ -22427,7 +24330,7 @@ function SemVer (version, options) {
   this.options = options
   this.loose = !!options.loose
 
-  var m = version.trim().match(options.loose ? re[LOOSE] : re[FULL])
+  var m = version.trim().match(options.loose ? safeRe[LOOSE] : safeRe[FULL])
 
   if (!m) {
     throw new TypeError('Invalid Version: ' + version)
@@ -22841,6 +24744,7 @@ function Comparator (comp, options) {
     return new Comparator(comp, options)
   }
 
+  comp = comp.trim().split(/\s+/).join(' ')
   debug('comparator', comp, options)
   this.options = options
   this.loose = !!options.loose
@@ -22857,7 +24761,7 @@ function Comparator (comp, options) {
 
 var ANY = {}
 Comparator.prototype.parse = function (comp) {
-  var r = this.options.loose ? re[COMPARATORLOOSE] : re[COMPARATOR]
+  var r = this.options.loose ? safeRe[COMPARATORLOOSE] : safeRe[COMPARATOR]
   var m = comp.match(r)
 
   if (!m) {
@@ -22971,9 +24875,16 @@ function Range (range, options) {
   this.loose = !!options.loose
   this.includePrerelease = !!options.includePrerelease
 
-  // First, split based on boolean or ||
+  // First reduce all whitespace as much as possible so we do not have to rely
+  // on potentially slow regexes like \s*. This is then stored and used for
+  // future error messages as well.
   this.raw = range
-  this.set = range.split(/\s*\|\|\s*/).map(function (range) {
+    .trim()
+    .split(/\s+/)
+    .join(' ')
+
+  // First, split based on boolean or ||
+  this.set = this.raw.split('||').map(function (range) {
     return this.parseRange(range.trim())
   }, this).filter(function (c) {
     // throw out any that are not relevant for whatever reason
@@ -22981,7 +24892,7 @@ function Range (range, options) {
   })
 
   if (!this.set.length) {
-    throw new TypeError('Invalid SemVer Range: ' + range)
+    throw new TypeError('Invalid SemVer Range: ' + this.raw)
   }
 
   this.format()
@@ -23000,28 +24911,23 @@ Range.prototype.toString = function () {
 
 Range.prototype.parseRange = function (range) {
   var loose = this.options.loose
-  range = range.trim()
   // `1.2.3 - 1.2.4` => `>=1.2.3 <=1.2.4`
-  var hr = loose ? re[HYPHENRANGELOOSE] : re[HYPHENRANGE]
+  var hr = loose ? safeRe[HYPHENRANGELOOSE] : safeRe[HYPHENRANGE]
   range = range.replace(hr, hyphenReplace)
   debug('hyphen replace', range)
   // `> 1.2.3 < 1.2.5` => `>1.2.3 <1.2.5`
-  range = range.replace(re[COMPARATORTRIM], comparatorTrimReplace)
-  debug('comparator trim', range, re[COMPARATORTRIM])
+  range = range.replace(safeRe[COMPARATORTRIM], comparatorTrimReplace)
+  debug('comparator trim', range, safeRe[COMPARATORTRIM])
 
   // `~ 1.2.3` => `~1.2.3`
-  range = range.replace(re[TILDETRIM], tildeTrimReplace)
+  range = range.replace(safeRe[TILDETRIM], tildeTrimReplace)
 
   // `^ 1.2.3` => `^1.2.3`
-  range = range.replace(re[CARETTRIM], caretTrimReplace)
-
-  // normalize spaces
-  range = range.split(/\s+/).join(' ')
+  range = range.replace(safeRe[CARETTRIM], caretTrimReplace)
 
   // At this point, the range is completely trimmed and
   // ready to be split into comparators.
-
-  var compRe = loose ? re[COMPARATORLOOSE] : re[COMPARATOR]
+  var compRe = loose ? safeRe[COMPARATORLOOSE] : safeRe[COMPARATOR]
   var set = range.split(' ').map(function (comp) {
     return parseComparator(comp, this.options)
   }, this).join(' ').split(/\s+/)
@@ -23097,7 +25003,7 @@ function replaceTildes (comp, options) {
 }
 
 function replaceTilde (comp, options) {
-  var r = options.loose ? re[TILDELOOSE] : re[TILDE]
+  var r = options.loose ? safeRe[TILDELOOSE] : safeRe[TILDE]
   return comp.replace(r, function (_, M, m, p, pr) {
     debug('tilde', comp, _, M, m, p, pr)
     var ret
@@ -23138,7 +25044,7 @@ function replaceCarets (comp, options) {
 
 function replaceCaret (comp, options) {
   debug('caret', comp, options)
-  var r = options.loose ? re[CARETLOOSE] : re[CARET]
+  var r = options.loose ? safeRe[CARETLOOSE] : safeRe[CARET]
   return comp.replace(r, function (_, M, m, p, pr) {
     debug('caret', comp, _, M, m, p, pr)
     var ret
@@ -23197,7 +25103,7 @@ function replaceXRanges (comp, options) {
 
 function replaceXRange (comp, options) {
   comp = comp.trim()
-  var r = options.loose ? re[XRANGELOOSE] : re[XRANGE]
+  var r = options.loose ? safeRe[XRANGELOOSE] : safeRe[XRANGE]
   return comp.replace(r, function (ret, gtlt, M, m, p, pr) {
     debug('xRange', comp, ret, gtlt, M, m, p, pr)
     var xM = isX(M)
@@ -23267,10 +25173,10 @@ function replaceXRange (comp, options) {
 function replaceStars (comp, options) {
   debug('replaceStars', comp, options)
   // Looseness is ignored here.  star is always as loose as it gets!
-  return comp.trim().replace(re[STAR], '')
+  return comp.trim().replace(safeRe[STAR], '')
 }
 
-// This function is passed to string.replace(re[HYPHENRANGE])
+// This function is passed to string.replace(safeRe[HYPHENRANGE])
 // M, m, patch, prerelease, build
 // 1.2 - 3.4.5 => >=1.2.0 <=3.4.5
 // 1.2.3 - 3.4 => >=1.2.0 <3.5.0 Any 3.4.x will do
@@ -23581,7 +25487,7 @@ function coerce (version) {
     return null
   }
 
-  var match = version.match(re[COERCE])
+  var match = version.match(safeRe[COERCE])
 
   if (match == null) {
     return null
@@ -28747,7 +30653,7 @@ function formatOffset(offset, format) {
 function timeObject(obj) {
   return pick(obj, ["hour", "minute", "second", "millisecond"]);
 }
-const ianaRegex = /[A-Za-z_+-]{1,256}(:?\/[A-Za-z0-9_+-]{1,256}(\/[A-Za-z0-9_+-]{1,256})?)?/;
+const ianaRegex = /[A-Za-z_+-]{1,256}(?::?\/[A-Za-z0-9_+-]{1,256}(?:\/[A-Za-z0-9_+-]{1,256})?)?/;
 
 /**
  * @private
@@ -29340,6 +31246,9 @@ class Formatter {
         case "d":
           return "day";
 
+        case "w":
+          return "week";
+
         case "M":
           return "month";
 
@@ -29409,6 +31318,10 @@ class Zone {
 
   get name() {
     throw new ZoneIsAbstractError();
+  }
+
+  get ianaName() {
+    return this.name;
   }
   /**
    * Returns whether the offset is known to be fixed for the whole year.
@@ -29566,7 +31479,8 @@ function makeDTF(zone) {
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit"
+      second: "2-digit",
+      era: "short"
     });
   }
 
@@ -29577,30 +31491,33 @@ const typeToPos = {
   year: 0,
   month: 1,
   day: 2,
-  hour: 3,
-  minute: 4,
-  second: 5
+  era: 3,
+  hour: 4,
+  minute: 5,
+  second: 6
 };
 
 function hackyOffset(dtf, date) {
   const formatted = dtf.format(date).replace(/\u200E/g, ""),
-        parsed = /(\d+)\/(\d+)\/(\d+),? (\d+):(\d+):(\d+)/.exec(formatted),
-        [, fMonth, fDay, fYear, fHour, fMinute, fSecond] = parsed;
-  return [fYear, fMonth, fDay, fHour, fMinute, fSecond];
+        parsed = /(\d+)\/(\d+)\/(\d+) (AD|BC),? (\d+):(\d+):(\d+)/.exec(formatted),
+        [, fMonth, fDay, fYear, fadOrBc, fHour, fMinute, fSecond] = parsed;
+  return [fYear, fMonth, fDay, fadOrBc, fHour, fMinute, fSecond];
 }
 
 function partsOffset(dtf, date) {
-  const formatted = dtf.formatToParts(date),
-        filled = [];
+  const formatted = dtf.formatToParts(date);
+  const filled = [];
 
   for (let i = 0; i < formatted.length; i++) {
     const {
       type,
       value
-    } = formatted[i],
-          pos = typeToPos[type];
+    } = formatted[i];
+    const pos = typeToPos[type];
 
-    if (!isUndefined(pos)) {
+    if (type === "era") {
+      filled[pos] = value;
+    } else if (!isUndefined(pos)) {
       filled[pos] = parseInt(value, 10);
     }
   }
@@ -29641,7 +31558,7 @@ class IANAZone extends Zone {
    * @param {string} s - The string to check validity on
    * @example IANAZone.isValidSpecifier("America/New_York") //=> true
    * @example IANAZone.isValidSpecifier("Sport~~blorp") //=> false
-   * @deprecated This method returns false some valid IANA names. Use isValidZone instead
+   * @deprecated This method returns false for some valid IANA names. Use isValidZone instead.
    * @return {boolean}
    */
 
@@ -29722,8 +31639,13 @@ class IANAZone extends Zone {
   offset(ts) {
     const date = new Date(ts);
     if (isNaN(date)) return NaN;
-    const dtf = makeDTF(this.name),
-          [year, month, day, hour, minute, second] = dtf.formatToParts ? partsOffset(dtf, date) : hackyOffset(dtf, date); // because we're using hour12 and https://bugs.chromium.org/p/chromium/issues/detail?id=1025564&can=2&q=%2224%3A00%22%20datetimeformat
+    const dtf = makeDTF(this.name);
+    let [year, month, day, adOrBc, hour, minute, second] = dtf.formatToParts ? partsOffset(dtf, date) : hackyOffset(dtf, date);
+
+    if (adOrBc === "BC") {
+      year = -Math.abs(year) + 1;
+    } // because we're using hour12 and https://bugs.chromium.org/p/chromium/issues/detail?id=1025564&can=2&q=%2224%3A00%22%20datetimeformat
+
 
     const adjustedHour = hour === 24 ? 0 : hour;
     const asUTC = objToLocalTS({
@@ -29822,6 +31744,14 @@ class FixedOffsetZone extends Zone {
 
   get name() {
     return this.fixed === 0 ? "UTC" : `UTC${formatOffset(this.fixed, "narrow")}`;
+  }
+
+  get ianaName() {
+    if (this.fixed === 0) {
+      return "Etc/UTC";
+    } else {
+      return `Etc/GMT${formatOffset(-this.fixed, "narrow")}`;
+    }
   }
   /** @override **/
 
@@ -30597,7 +32527,7 @@ function combineExtractors(...extractors) {
     const [val, zone, next] = ex(m, cursor);
     return [{ ...mergedVals,
       ...val
-    }, mergedZone || zone, next];
+    }, zone || mergedZone, next];
   }, [{}, null, 1]).slice(0, 2);
 }
 
@@ -30631,19 +32561,20 @@ function simpleParse(...keys) {
 } // ISO and SQL parsing
 
 
-const offsetRegex = /(?:(Z)|([+-]\d\d)(?::?(\d\d))?)/,
-      isoTimeBaseRegex = /(\d\d)(?::?(\d\d)(?::?(\d\d)(?:[.,](\d{1,30}))?)?)?/,
-      isoTimeRegex = RegExp(`${isoTimeBaseRegex.source}${offsetRegex.source}?`),
-      isoTimeExtensionRegex = RegExp(`(?:T${isoTimeRegex.source})?`),
-      isoYmdRegex = /([+-]\d{6}|\d{4})(?:-?(\d\d)(?:-?(\d\d))?)?/,
-      isoWeekRegex = /(\d{4})-?W(\d\d)(?:-?(\d))?/,
-      isoOrdinalRegex = /(\d{4})-?(\d{3})/,
-      extractISOWeekData = simpleParse("weekYear", "weekNumber", "weekDay"),
-      extractISOOrdinalData = simpleParse("year", "ordinal"),
-      sqlYmdRegex = /(\d{4})-(\d\d)-(\d\d)/,
-      // dumbed-down version of the ISO one
-sqlTimeRegex = RegExp(`${isoTimeBaseRegex.source} ?(?:${offsetRegex.source}|(${ianaRegex.source}))?`),
-      sqlTimeExtensionRegex = RegExp(`(?: ${sqlTimeRegex.source})?`);
+const offsetRegex = /(?:(Z)|([+-]\d\d)(?::?(\d\d))?)/;
+const isoExtendedZone = `(?:${offsetRegex.source}?(?:\\[(${ianaRegex.source})\\])?)?`;
+const isoTimeBaseRegex = /(\d\d)(?::?(\d\d)(?::?(\d\d)(?:[.,](\d{1,30}))?)?)?/;
+const isoTimeRegex = RegExp(`${isoTimeBaseRegex.source}${isoExtendedZone}`);
+const isoTimeExtensionRegex = RegExp(`(?:T${isoTimeRegex.source})?`);
+const isoYmdRegex = /([+-]\d{6}|\d{4})(?:-?(\d\d)(?:-?(\d\d))?)?/;
+const isoWeekRegex = /(\d{4})-?W(\d\d)(?:-?(\d))?/;
+const isoOrdinalRegex = /(\d{4})-?(\d{3})/;
+const extractISOWeekData = simpleParse("weekYear", "weekNumber", "weekDay");
+const extractISOOrdinalData = simpleParse("year", "ordinal");
+const sqlYmdRegex = /(\d{4})-(\d\d)-(\d\d)/; // dumbed-down version of the ISO one
+
+const sqlTimeRegex = RegExp(`${isoTimeBaseRegex.source} ?(?:${offsetRegex.source}|(${ianaRegex.source}))?`);
+const sqlTimeExtensionRegex = RegExp(`(?: ${sqlTimeRegex.source})?`);
 
 function int(match, pos, fallback) {
   const m = match[pos];
@@ -30684,7 +32615,7 @@ function extractIANAZone(match, cursor) {
 
 const isoTimeOnly = RegExp(`^T?${isoTimeBaseRegex.source}$`); // ISO duration parsing
 
-const isoDuration = /^-?P(?:(?:(-?\d{1,9}(?:\.\d{1,9})?)Y)?(?:(-?\d{1,9}(?:\.\d{1,9})?)M)?(?:(-?\d{1,9}(?:\.\d{1,9})?)W)?(?:(-?\d{1,9}(?:\.\d{1,9})?)D)?(?:T(?:(-?\d{1,9}(?:\.\d{1,9})?)H)?(?:(-?\d{1,9}(?:\.\d{1,9})?)M)?(?:(-?\d{1,20})(?:[.,](-?\d{1,9}))?S)?)?)$/;
+const isoDuration = /^-?P(?:(?:(-?\d{1,20}(?:\.\d{1,20})?)Y)?(?:(-?\d{1,20}(?:\.\d{1,20})?)M)?(?:(-?\d{1,20}(?:\.\d{1,20})?)W)?(?:(-?\d{1,20}(?:\.\d{1,20})?)D)?(?:T(?:(-?\d{1,20}(?:\.\d{1,20})?)H)?(?:(-?\d{1,20}(?:\.\d{1,20})?)M)?(?:(-?\d{1,20})(?:[.,](-?\d{1,20}))?S)?)?)$/;
 
 function extractISODuration(match) {
   const [s, yearStr, monthStr, weekStr, dayStr, hourStr, minuteStr, secondStr, millisecondsStr] = match;
@@ -30758,12 +32689,12 @@ function extractRFC2822(match) {
 
 function preprocessRFC2822(s) {
   // Remove comments and folding whitespace and replace multiple-spaces with a single space
-  return s.replace(/\([^)]*\)|[\n\t]/g, " ").replace(/(\s\s+)/g, " ").trim();
+  return s.replace(/\([^()]*\)|[\n\t]/g, " ").replace(/(\s\s+)/g, " ").trim();
 } // http date
 
 
 const rfc1123 = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d\d) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d\d):(\d\d):(\d\d) GMT$/,
-      rfc850 = /^(Monday|Tuesday|Wedsday|Thursday|Friday|Saturday|Sunday), (\d\d)-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d\d) (\d\d):(\d\d):(\d\d) GMT$/,
+      rfc850 = /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\d\d)-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d\d) (\d\d):(\d\d):(\d\d) GMT$/,
       ascii = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ( \d|\d\d) (\d\d):(\d\d):(\d\d) (\d{4})$/;
 
 function extractRFC1123Or850(match) {
@@ -30782,11 +32713,11 @@ const isoYmdWithTimeExtensionRegex = combineRegexes(isoYmdRegex, isoTimeExtensio
 const isoWeekWithTimeExtensionRegex = combineRegexes(isoWeekRegex, isoTimeExtensionRegex);
 const isoOrdinalWithTimeExtensionRegex = combineRegexes(isoOrdinalRegex, isoTimeExtensionRegex);
 const isoTimeCombinedRegex = combineRegexes(isoTimeRegex);
-const extractISOYmdTimeAndOffset = combineExtractors(extractISOYmd, extractISOTime, extractISOOffset);
-const extractISOWeekTimeAndOffset = combineExtractors(extractISOWeekData, extractISOTime, extractISOOffset);
-const extractISOOrdinalDateAndTime = combineExtractors(extractISOOrdinalData, extractISOTime, extractISOOffset);
-const extractISOTimeAndOffset = combineExtractors(extractISOTime, extractISOOffset);
-/**
+const extractISOYmdTimeAndOffset = combineExtractors(extractISOYmd, extractISOTime, extractISOOffset, extractIANAZone);
+const extractISOWeekTimeAndOffset = combineExtractors(extractISOWeekData, extractISOTime, extractISOOffset, extractIANAZone);
+const extractISOOrdinalDateAndTime = combineExtractors(extractISOOrdinalData, extractISOTime, extractISOOffset, extractIANAZone);
+const extractISOTimeAndOffset = combineExtractors(extractISOTime, extractISOOffset, extractIANAZone);
+/*
  * @private
  */
 
@@ -30808,10 +32739,9 @@ function parseISOTimeOnly(s) {
 }
 const sqlYmdWithTimeExtensionRegex = combineRegexes(sqlYmdRegex, sqlTimeExtensionRegex);
 const sqlTimeCombinedRegex = combineRegexes(sqlTimeRegex);
-const extractISOYmdTimeOffsetAndIANAZone = combineExtractors(extractISOYmd, extractISOTime, extractISOOffset, extractIANAZone);
 const extractISOTimeOffsetAndIANAZone = combineExtractors(extractISOTime, extractISOOffset, extractIANAZone);
 function parseSQL(s) {
-  return parse(s, [sqlYmdWithTimeExtensionRegex, extractISOYmdTimeOffsetAndIANAZone], [sqlTimeCombinedRegex, extractISOTimeOffsetAndIANAZone]);
+  return parse(s, [sqlYmdWithTimeExtensionRegex, extractISOYmdTimeAndOffset], [sqlTimeCombinedRegex, extractISOTimeOffsetAndIANAZone]);
 }
 
 const INVALID$2 = "Invalid Duration"; // unit conversion constants
@@ -30956,7 +32886,7 @@ function normalizeValues(matrix, vals) {
  * Here is a brief overview of commonly used methods and getters in Duration:
  *
  * * **Creation** To create a Duration, use {@link Duration#fromMillis}, {@link Duration#fromObject}, or {@link Duration#fromISO}.
- * * **Unit values** See the {@link Duration#years}, {@link Duration.months}, {@link Duration#weeks}, {@link Duration#days}, {@link Duration#hours}, {@link Duration#minutes}, {@link Duration#seconds}, {@link Duration#milliseconds} accessors.
+ * * **Unit values** See the {@link Duration#years}, {@link Duration#months}, {@link Duration#weeks}, {@link Duration#days}, {@link Duration#hours}, {@link Duration#minutes}, {@link Duration#seconds}, {@link Duration#milliseconds} accessors.
  * * **Configuration** See  {@link Duration#locale} and {@link Duration#numberingSystem} accessors.
  * * **Transformation** To create new Durations out of old ones use {@link Duration#plus}, {@link Duration#minus}, {@link Duration#normalize}, {@link Duration#set}, {@link Duration#reconfigure}, {@link Duration#shiftTo}, and {@link Duration#negate}.
  * * **Output** To convert the Duration into other representations, see {@link Duration#as}, {@link Duration#toISO}, {@link Duration#toFormat}, and {@link Duration#toJSON}
@@ -31211,10 +33141,12 @@ class Duration {
    * * `m` for minutes
    * * `h` for hours
    * * `d` for days
+   * * `w` for weeks
    * * `M` for months
    * * `y` for years
    * Notes:
    * * Add padding by repeating the token, e.g. "yy" pads the years to two digits, "hhhh" pads the hours out to four digits
+   * * Tokens can be escaped by wrapping with single quotes.
    * * The duration will be converted to the set of units in the format string using {@link Duration#shiftTo} and the Durations's conversion accuracy setting.
    * @param {string} fmt - the format string
    * @param {Object} opts - options
@@ -31234,8 +33166,9 @@ class Duration {
     return this.isValid ? Formatter.create(this.loc, fmtOpts).formatDurationFromString(this, fmt) : INVALID$2;
   }
   /**
-   * Returns a string representation of a Duration with all units included
-   * To modify its behavior use the `listStyle` and any Intl.NumberFormat option, though `unitDisplay` is especially relevant. See {@link Intl.NumberFormat}.
+   * Returns a string representation of a Duration with all units included.
+   * To modify its behavior use the `listStyle` and any Intl.NumberFormat option, though `unitDisplay` is especially relevant.
+   * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat
    * @param opts - On option object to override the formatting. Accepts the same keys as the options parameter of the native `Int.NumberFormat` constructor, as well as `listStyle`.
    * @example
    * ```js
@@ -32758,7 +34691,7 @@ function intUnit(regex, post = i => i) {
 }
 
 const NBSP = String.fromCharCode(160);
-const spaceOrNBSP = `( |${NBSP})`;
+const spaceOrNBSP = `[ ${NBSP}]`;
 const spaceOrNBSPRegExp = new RegExp(spaceOrNBSP, "g");
 
 function fixListRegex(s) {
@@ -33275,7 +35208,13 @@ function unitOutOfRange(unit, value) {
 }
 
 function dayOfWeek(year, month, day) {
-  const js = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  const d = new Date(Date.UTC(year, month - 1, day));
+
+  if (year < 100 && year >= 0) {
+    d.setUTCFullYear(d.getUTCFullYear() - 1900);
+  }
+
+  const js = d.getUTCDay();
   return js === 0 ? 7 : js;
 }
 
@@ -33607,7 +35546,7 @@ function toISODate(o, extended) {
   return c;
 }
 
-function toISOTime(o, extended, suppressSeconds, suppressMilliseconds, includeOffset) {
+function toISOTime(o, extended, suppressSeconds, suppressMilliseconds, includeOffset, extendedZone) {
   let c = padStart(o.c.hour);
 
   if (extended) {
@@ -33631,7 +35570,7 @@ function toISOTime(o, extended, suppressSeconds, suppressMilliseconds, includeOf
   }
 
   if (includeOffset) {
-    if (o.isOffsetFixed && o.offset === 0) {
+    if (o.isOffsetFixed && o.offset === 0 && !extendedZone) {
       c += "Z";
     } else if (o.o < 0) {
       c += "-";
@@ -33644,6 +35583,10 @@ function toISOTime(o, extended, suppressSeconds, suppressMilliseconds, includeOf
       c += ":";
       c += padStart(Math.trunc(o.o % 60));
     }
+  }
+
+  if (extendedZone) {
+    c += "[" + o.zone.ianaName + "]";
   }
 
   return c;
@@ -33708,9 +35651,6 @@ function normalizeUnit(unit) {
   if (!normalized) throw new InvalidUnitError(unit);
   return normalized;
 } // this is a dumbed down version of fromObject() that runs about 60% faster
-// but doesn't do any validation, makes a bunch of assumptions about what units
-// are present, and so on.
-// this is a dumbed down version of fromObject() that runs about 60% faster
 // but doesn't do any validation, makes a bunch of assumptions about what units
 // are present, and so on.
 
@@ -34322,7 +36262,7 @@ class DateTime {
     }
   }
   /**
-   * Check if an object is a DateTime. Works across context boundaries
+   * Check if an object is an instance of DateTime. Works across context boundaries
    * @param {object} o
    * @return {boolean}
    */
@@ -34662,7 +36602,8 @@ class DateTime {
       return false;
     } else {
       return this.offset > this.set({
-        month: 1
+        month: 1,
+        day: 1
       }).offset || this.offset > this.set({
         month: 5
       }).offset;
@@ -35059,6 +37000,7 @@ class DateTime {
    * @param {boolean} [opts.suppressMilliseconds=false] - exclude milliseconds from the format if they're 0
    * @param {boolean} [opts.suppressSeconds=false] - exclude seconds from the format if they're 0
    * @param {boolean} [opts.includeOffset=true] - include the offset, such as 'Z' or '-04:00'
+   * @param {boolean} [opts.extendedZone=true] - add the time zone format extension
    * @param {string} [opts.format='extended'] - choose between the basic and extended format
    * @example DateTime.utc(1983, 5, 25).toISO() //=> '1982-05-25T00:00:00.000Z'
    * @example DateTime.now().toISO() //=> '2017-04-22T20:47:05.335-04:00'
@@ -35072,7 +37014,8 @@ class DateTime {
     format = "extended",
     suppressSeconds = false,
     suppressMilliseconds = false,
-    includeOffset = true
+    includeOffset = true,
+    extendedZone = false
   } = {}) {
     if (!this.isValid) {
       return null;
@@ -35081,7 +37024,7 @@ class DateTime {
     const ext = format === "extended";
     let c = toISODate(this, ext);
     c += "T";
-    c += toISOTime(this, ext, suppressSeconds, suppressMilliseconds, includeOffset);
+    c += toISOTime(this, ext, suppressSeconds, suppressMilliseconds, includeOffset, extendedZone);
     return c;
   }
   /**
@@ -35119,6 +37062,7 @@ class DateTime {
    * @param {boolean} [opts.suppressMilliseconds=false] - exclude milliseconds from the format if they're 0
    * @param {boolean} [opts.suppressSeconds=false] - exclude seconds from the format if they're 0
    * @param {boolean} [opts.includeOffset=true] - include the offset, such as 'Z' or '-04:00'
+   * @param {boolean} [opts.extendedZone=true] - add the time zone format extension
    * @param {boolean} [opts.includePrefix=false] - include the `T` prefix
    * @param {string} [opts.format='extended'] - choose between the basic and extended format
    * @example DateTime.utc().set({ hour: 7, minute: 34 }).toISOTime() //=> '07:34:19.361Z'
@@ -35134,6 +37078,7 @@ class DateTime {
     suppressSeconds = false,
     includeOffset = true,
     includePrefix = false,
+    extendedZone = false,
     format = "extended"
   } = {}) {
     if (!this.isValid) {
@@ -35141,7 +37086,7 @@ class DateTime {
     }
 
     let c = includePrefix ? "T" : "";
-    return c + toISOTime(this, format === "extended", suppressSeconds, suppressMilliseconds, includeOffset);
+    return c + toISOTime(this, format === "extended", suppressSeconds, suppressMilliseconds, includeOffset, extendedZone);
   }
   /**
    * Returns an RFC 2822-compatible string representation of this DateTime
@@ -35760,7 +37705,7 @@ function friendlyDateTime(dateTimeish) {
   }
 }
 
-const VERSION = "2.3.1";
+const VERSION = "2.5.2";
 
 exports.DateTime = DateTime;
 exports.Duration = Duration;
@@ -36254,15 +38199,21 @@ class ClientError extends ts_error_1.ExtendableError {
         Object.defineProperty(this, '@@nice-grpc', {
             value: true,
         });
+        Object.defineProperty(this, '@@nice-grpc:ClientError', {
+            value: true,
+        });
     }
     static [Symbol.hasInstance](instance) {
         // allow instances of ClientError from different versions of nice-grpc
         // to work with `instanceof ClientError`
+        if (this !== ClientError) {
+            return this.prototype.isPrototypeOf(instance);
+        }
         return (typeof instance === 'object' &&
             instance !== null &&
             (instance.constructor === ClientError ||
-                (instance.name === 'ClientError' &&
-                    instance['@@nice-grpc'] === true)));
+                instance['@@nice-grpc:ClientError'] === true ||
+                (instance.name === 'ClientError' && instance['@@nice-grpc'] === true)));
     }
 }
 exports.ClientError = ClientError;
@@ -36309,7 +38260,11 @@ exports.composeClientMiddleware = composeClientMiddleware;
 
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
-    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
 }) : (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     o[k2] = m[k];
@@ -36365,15 +38320,21 @@ class ServerError extends ts_error_1.ExtendableError {
         Object.defineProperty(this, '@@nice-grpc', {
             value: true,
         });
+        Object.defineProperty(this, '@@nice-grpc:ServerError', {
+            value: true,
+        });
     }
     static [Symbol.hasInstance](instance) {
         // allow instances of ServerError from different versions of nice-grpc
         // to work with `instanceof ServerError`
+        if (this !== ServerError) {
+            return this.prototype.isPrototypeOf(instance);
+        }
         return (typeof instance === 'object' &&
             instance !== null &&
             (instance.constructor === ServerError ||
-                (instance.name === 'ServerError' &&
-                    instance['@@nice-grpc'] === true)));
+                instance['@@nice-grpc:ServerError'] === true ||
+                (instance.name === 'ServerError' && instance['@@nice-grpc'] === true)));
     }
 }
 exports.ServerError = ServerError;
@@ -36453,7 +38414,8 @@ function createClientFactoryWithMiddleware(middleware) {
                 : (0, nice_grpc_common_1.composeClientMiddleware)(middleware, newMiddleware));
         },
         create(definition, channel, defaultCallOptions = {}) {
-            const grpcClient = new grpc_js_1.Client('', null, {
+            const constructor = (0, grpc_js_1.makeClientConstructor)({}, '');
+            const grpcClient = new constructor('', null, {
                 channelOverride: channel,
             });
             const client = {};
@@ -36509,7 +38471,8 @@ function createChannel(address, credentials, options = {}) {
         credentials !== null && credentials !== void 0 ? credentials : (credentials = grpc_js_1.ChannelCredentials.createSsl());
     }
     else {
-        throw new Error(`Unsupported protocol: '${protocol}'. Expected one of 'http', 'https'`);
+        credentials !== null && credentials !== void 0 ? credentials : (credentials = grpc_js_1.ChannelCredentials.createInsecure());
+        return new grpc_js_1.Channel(address, credentials, options);
     }
     return new grpc_js_1.Channel(`${host}:${port}`, credentials, options);
 }
@@ -39407,13 +41370,21 @@ var Enum = __nccwpck_require__(7732),
  * @ignore
  */
 function genValuePartial_fromObject(gen, field, fieldIndex, prop) {
+    var defaultAlreadyEmitted = false;
     /* eslint-disable no-unexpected-multiline, block-scoped-var, no-redeclare */
     if (field.resolvedType) {
         if (field.resolvedType instanceof Enum) { gen
             ("switch(d%s){", prop);
             for (var values = field.resolvedType.values, keys = Object.keys(values), i = 0; i < keys.length; ++i) {
-                if (field.repeated && values[keys[i]] === field.typeDefault) gen
-                ("default:");
+                // enum unknown values passthrough
+                if (values[keys[i]] === field.typeDefault && !defaultAlreadyEmitted) { gen
+                    ("default:")
+                        ("if(typeof(d%s)===\"number\"){m%s=d%s;break}", prop, prop, prop);
+                    if (!field.repeated) gen // fallback to default value only for
+                                             // arrays, to avoid leaving holes.
+                        ("break");           // for non-repeated fields, just ignore
+                    defaultAlreadyEmitted = true;
+                }
                 gen
                 ("case%j:", keys[i])
                 ("case %i:", values[keys[i]])
@@ -39460,7 +41431,7 @@ function genValuePartial_fromObject(gen, field, fieldIndex, prop) {
             case "bytes": gen
                 ("if(typeof d%s===\"string\")", prop)
                     ("util.base64.decode(d%s,m%s=util.newBuffer(util.base64.length(d%s)),0)", prop, prop, prop)
-                ("else if(d%s.length)", prop)
+                ("else if(d%s.length >= 0)", prop)
                     ("m%s=d%s", prop, prop);
                 break;
             case "string": gen
@@ -39545,7 +41516,7 @@ function genValuePartial_toObject(gen, field, fieldIndex, prop) {
     /* eslint-disable no-unexpected-multiline, block-scoped-var, no-redeclare */
     if (field.resolvedType) {
         if (field.resolvedType instanceof Enum) gen
-            ("d%s=o.enums===String?types[%i].values[m%s]:m%s", prop, fieldIndex, prop, prop);
+            ("d%s=o.enums===String?(types[%i].values[m%s]===undefined?m%s:types[%i].values[m%s]):m%s", prop, fieldIndex, prop, prop, fieldIndex, prop, prop);
         else gen
             ("d%s=types[%i].toObject(m%s,o)", prop, fieldIndex, prop);
     } else {
@@ -39723,7 +41694,7 @@ function decoder(mtype) {
         var field = mtype._fieldsArray[i].resolve(),
             type  = field.resolvedType instanceof Enum ? "int32" : field.type,
             ref   = "m" + util.safeProp(field.name); gen
-            ("case %i:", field.id);
+            ("case %i: {", field.id);
 
         // Map fields
         if (field.map) { gen
@@ -39794,8 +41765,9 @@ function decoder(mtype) {
         else gen
                 ("%s=r.%s()", ref, type);
         gen
-                ("break");
-    // Unknown fields
+                ("break")
+            ("}");
+        // Unknown fields
     } gen
             ("default:")
                 ("r.skipType(t&7)")
@@ -39952,8 +41924,9 @@ var Namespace = __nccwpck_require__(6189),
  * @param {Object.<string,*>} [options] Declared options
  * @param {string} [comment] The comment for this enum
  * @param {Object.<string,string>} [comments] The value comments for this enum
+ * @param {Object.<string,Object<string,*>>|undefined} [valuesOptions] The value options for this enum
  */
-function Enum(name, values, options, comment, comments) {
+function Enum(name, values, options, comment, comments, valuesOptions) {
     ReflectionObject.call(this, name, options);
 
     if (values && typeof values !== "object")
@@ -39982,6 +41955,12 @@ function Enum(name, values, options, comment, comments) {
      * @type {Object.<string,string>}
      */
     this.comments = comments || {};
+
+    /**
+     * Values options, if any
+     * @type {Object<string, Object<string, *>>|undefined}
+     */
+    this.valuesOptions = valuesOptions;
 
     /**
      * Reserved ranges, if any.
@@ -40027,11 +42006,12 @@ Enum.fromJSON = function fromJSON(name, json) {
 Enum.prototype.toJSON = function toJSON(toJSONOptions) {
     var keepComments = toJSONOptions ? Boolean(toJSONOptions.keepComments) : false;
     return util.toObject([
-        "options"  , this.options,
-        "values"   , this.values,
-        "reserved" , this.reserved && this.reserved.length ? this.reserved : undefined,
-        "comment"  , keepComments ? this.comment : undefined,
-        "comments" , keepComments ? this.comments : undefined
+        "options"       , this.options,
+        "valuesOptions" , this.valuesOptions,
+        "values"        , this.values,
+        "reserved"      , this.reserved && this.reserved.length ? this.reserved : undefined,
+        "comment"       , keepComments ? this.comment : undefined,
+        "comments"      , keepComments ? this.comments : undefined
     ]);
 };
 
@@ -40040,11 +42020,12 @@ Enum.prototype.toJSON = function toJSON(toJSONOptions) {
  * @param {string} name Value name
  * @param {number} id Value id
  * @param {string} [comment] Comment, if any
+ * @param {Object.<string, *>|undefined} [options] Options, if any
  * @returns {Enum} `this`
  * @throws {TypeError} If arguments are invalid
  * @throws {Error} If there is already a value with this name or id
  */
-Enum.prototype.add = function add(name, id, comment) {
+Enum.prototype.add = function add(name, id, comment, options) {
     // utilized by the parser but not by .fromJSON
 
     if (!util.isString(name))
@@ -40069,6 +42050,12 @@ Enum.prototype.add = function add(name, id, comment) {
     } else
         this.valuesById[this.values[name] = id] = name;
 
+    if (options) {
+        if (this.valuesOptions === undefined)
+            this.valuesOptions = {};
+        this.valuesOptions[name] = options || null;
+    }
+
     this.comments[name] = comment || null;
     return this;
 };
@@ -40092,6 +42079,8 @@ Enum.prototype.remove = function remove(name) {
     delete this.valuesById[val];
     delete this.values[name];
     delete this.comments[name];
+    if (this.valuesOptions)
+        delete this.valuesOptions[name];
 
     return this;
 };
@@ -40201,13 +42190,13 @@ function Field(name, id, type, rule, extend, options, comment) {
     if (extend !== undefined && !util.isString(extend))
         throw TypeError("extend must be a string");
 
-    if (rule === "proto3_optional") {
-        rule = "optional";
-    }
     /**
      * Field rule, if any.
      * @type {string|undefined}
      */
+    if (rule === "proto3_optional") {
+        rule = "optional";
+    }
     this.rule = rule && rule !== "optional" ? rule : undefined; // toJSON
 
     /**
@@ -40393,6 +42382,9 @@ Field.prototype.resolve = function resolve() {
             this.typeDefault = null;
         else // instanceof Enum
             this.typeDefault = this.resolvedType.values[Object.keys(this.resolvedType.values)[0]]; // first defined
+    } else if (this.options && this.options.proto3_optional) {
+        // proto3 scalar value marked optional; should default to null
+        this.typeDefault = null;
     }
 
     // use explicitly set default value if present
@@ -41135,8 +43127,8 @@ var ReflectionObject = __nccwpck_require__(3575);
 ((Namespace.prototype = Object.create(ReflectionObject.prototype)).constructor = Namespace).className = "Namespace";
 
 var Field    = __nccwpck_require__(8213),
-    OneOf    = __nccwpck_require__(4408),
-    util     = __nccwpck_require__(7174);
+    util     = __nccwpck_require__(7174),
+    OneOf    = __nccwpck_require__(4408);
 
 var Type,    // cyclic
     Service,
@@ -41272,9 +43264,8 @@ Object.defineProperty(Namespace.prototype, "nestedArray", {
 /**
  * Any nested object descriptor.
  * @typedef AnyNestedObject
- * @type {IEnum|IType|IService|AnyExtensionField|INamespace}
+ * @type {IEnum|IType|IService|AnyExtensionField|INamespace|IOneOf}
  */
-// ^ BEWARE: VSCode hangs forever when using more than 5 types (that's why AnyExtensionField exists in the first place)
 
 /**
  * Converts this namespace to a namespace descriptor.
@@ -41347,7 +43338,7 @@ Namespace.prototype.getEnum = function getEnum(name) {
  */
 Namespace.prototype.add = function add(object) {
 
-    if (!(object instanceof Field && object.extend !== undefined || object instanceof Type || object instanceof Enum || object instanceof Service || object instanceof Namespace || object instanceof OneOf))
+    if (!(object instanceof Field && object.extend !== undefined || object instanceof Type  || object instanceof OneOf || object instanceof Enum || object instanceof Service || object instanceof Namespace))
         throw TypeError("object must be a valid nested object");
 
     if (!this.nested)
@@ -42393,6 +44384,16 @@ function parse(source, root, options) {
             parseGroup(parent, rule);
             return;
         }
+        // Type names can consume multiple tokens, in multiple variants:
+        //    package.subpackage   field       tokens: "package.subpackage" [TYPE NAME ENDS HERE] "field"
+        //    package . subpackage field       tokens: "package" "." "subpackage" [TYPE NAME ENDS HERE] "field"
+        //    package.  subpackage field       tokens: "package." "subpackage" [TYPE NAME ENDS HERE] "field"
+        //    package  .subpackage field       tokens: "package" ".subpackage" [TYPE NAME ENDS HERE] "field"
+        // Keep reading tokens until we get a type name with no period at the end,
+        // and the next token does not start with a period.
+        while (type.endsWith(".") || peek().startsWith(".")) {
+            type += next();
+        }
 
         /* istanbul ignore if */
         if (!typeRefRe.test(type))
@@ -42474,6 +44475,14 @@ function parse(source, root, options) {
                     } else {
                         parseField(type, "optional");
                     }
+                    break;
+
+                case "message":
+                    parseType(type, token);
+                    break;
+
+                case "enum":
+                    parseEnum(type, token);
                     break;
 
                 /* istanbul ignore next */
@@ -42576,7 +44585,14 @@ function parse(source, root, options) {
 
         skip("=");
         var value = parseId(next(), true),
-            dummy = {};
+            dummy = {
+                options: undefined
+            };
+        dummy.setOption = function(name, value) {
+            if (this.options === undefined)
+                this.options = {};
+            this.options[name] = value;
+        };
         ifBlock(dummy, function parseEnumValue_block(token) {
 
             /* istanbul ignore else */
@@ -42589,7 +44605,7 @@ function parse(source, root, options) {
         }, function parseEnumValue_line() {
             parseInlineOptions(dummy); // skip
         });
-        parent.add(token, value, dummy.comment);
+        parent.add(token, value, dummy.comment, dummy.options);
     }
 
     function parseOption(parent, token) {
@@ -42609,7 +44625,7 @@ function parse(source, root, options) {
             option = name;
             token = peek();
             if (fqTypeRefRe.test(token)) {
-                propName = token.substr(1); //remove '.' before property name
+                propName = token.slice(1); //remove '.' before property name
                 name += token;
                 next();
             }
@@ -42620,33 +44636,57 @@ function parse(source, root, options) {
     }
 
     function parseOptionValue(parent, name) {
-        if (skip("{", true)) { // { a: "foo" b { c: "bar" } }
-            var result = {};
+        // { a: "foo" b { c: "bar" } }
+        if (skip("{", true)) {
+            var objectResult = {};
+
             while (!skip("}", true)) {
                 /* istanbul ignore if */
-                if (!nameRe.test(token = next()))
+                if (!nameRe.test(token = next())) {
                     throw illegal(token, "name");
+                }
 
                 var value;
                 var propName = token;
+
+                skip(":", true);
+
                 if (peek() === "{")
                     value = parseOptionValue(parent, name + "." + token);
-                else {
-                    skip(":");
-                    if (peek() === "{")
-                        value = parseOptionValue(parent, name + "." + token);
-                    else {
-                        value = readValue(true);
-                        setOption(parent, name + "." + token, value);
+                else if (peek() === "[") {
+                    // option (my_option) = {
+                    //     repeated_value: [ "foo", "bar" ]
+                    // };
+                    value = [];
+                    var lastValue;
+                    if (skip("[", true)) {
+                        do {
+                            lastValue = readValue(true);
+                            value.push(lastValue);
+                        } while (skip(",", true));
+                        skip("]");
+                        if (typeof lastValue !== "undefined") {
+                            setOption(parent, name + "." + token, lastValue);
+                        }
                     }
+                } else {
+                    value = readValue(true);
+                    setOption(parent, name + "." + token, value);
                 }
-                var prevValue = result[propName];
+
+                var prevValue = objectResult[propName];
+
                 if (prevValue)
                     value = [].concat(prevValue).concat(value);
-                result[propName] = value;
+
+                objectResult[propName] = value;
+
+                // Semicolons and commas can be optional
                 skip(",", true);
+                skip(";", true);
             }
-            return result;
+
+            return objectResult;
         }
 
         var simpleValue = readValue(true);
@@ -43484,6 +45524,7 @@ Root.prototype.load = function load(filename, options, callback) {
 
     // Fetches a single file
     function fetch(filename, weak) {
+        filename = getBundledFileName(filename) || filename;
 
         // Skip if already loaded / attempted
         if (self.files.indexOf(filename) > -1)
@@ -43612,6 +45653,10 @@ function tryHandleExtension(root, field) {
     var extendedType = field.parent.lookup(field.extend);
     if (extendedType) {
         var sisterField = new Field(field.fullName, field.id, field.type, field.rule, undefined, field.options);
+        //do not allow to extend same field twice to prevent the error
+        if (extendedType.get(sisterField.name)) {
+            return true;
+        }
         sisterField.declaringField = field;
         field.extensionField = sisterField;
         extendedType.add(sisterField);
@@ -43714,7 +45759,7 @@ module.exports = {};
 /**
  * Named roots.
  * This is where pbjs stores generated structures (the option `-r, --root` specifies a name).
- * Can also be used manually to make roots available accross modules.
+ * Can also be used manually to make roots available across modules.
  * @name roots
  * @type {Object.<string,Root>}
  * @example
@@ -44208,11 +46253,8 @@ function tokenize(source, alternateCommentMode) {
     var offset = 0,
         length = source.length,
         line = 1,
-        commentType = null,
-        commentText = null,
-        commentLine = 0,
-        commentLineEmpty = false,
-        commentIsLeading = false;
+        lastCommentLine = 0,
+        comments = {};
 
     var stack = [];
 
@@ -44265,10 +46307,11 @@ function tokenize(source, alternateCommentMode) {
      * @inner
      */
     function setComment(start, end, isLeading) {
-        commentType = source.charAt(start++);
-        commentLine = line;
-        commentLineEmpty = false;
-        commentIsLeading = isLeading;
+        var comment = {
+            type: source.charAt(start++),
+            lineEmpty: false,
+            leading: isLeading,
+        };
         var lookback;
         if (alternateCommentMode) {
             lookback = 2;  // alternate comment parsing: "//" or "/*"
@@ -44280,7 +46323,7 @@ function tokenize(source, alternateCommentMode) {
         do {
             if (--commentOffset < 0 ||
                     (c = source.charAt(commentOffset)) === "\n") {
-                commentLineEmpty = true;
+                comment.lineEmpty = true;
                 break;
             }
         } while (c === " " || c === "\t");
@@ -44291,9 +46334,12 @@ function tokenize(source, alternateCommentMode) {
             lines[i] = lines[i]
                 .replace(alternateCommentMode ? setCommentAltRe : setCommentRe, "")
                 .trim();
-        commentText = lines
+        comment.text = lines
             .join("\n")
             .trim();
+
+        comments[line] = comment;
+        lastCommentLine = line;
     }
 
     function isDoubleSlashCommentLine(startOffset) {
@@ -44362,6 +46408,9 @@ function tokenize(source, alternateCommentMode) {
                         ++offset;
                         if (isDoc) {
                             setComment(start, offset - 1, isLeadingComment);
+                            // Trailing comment cannot not be multi-line,
+                            // so leading comment state should be reset to handle potential next comments
+                            isLeadingComment = true;
                         }
                         ++line;
                         repeat = true;
@@ -44377,12 +46426,17 @@ function tokenize(source, alternateCommentMode) {
                                     break;
                                 }
                                 offset++;
+                                if (!isLeadingComment) {
+                                    // Trailing comment cannot not be multi-line
+                                    break;
+                                }
                             } while (isDoubleSlashCommentLine(offset));
                         } else {
                             offset = Math.min(length, findEndOfLine(offset) + 1);
                         }
                         if (isDoc) {
                             setComment(start, offset, isLeadingComment);
+                            isLeadingComment = true;
                         }
                         line++;
                         repeat = true;
@@ -44404,6 +46458,7 @@ function tokenize(source, alternateCommentMode) {
                     ++offset;
                     if (isDoc) {
                         setComment(start, offset - 2, isLeadingComment);
+                        isLeadingComment = true;
                     }
                     repeat = true;
                 } else {
@@ -44479,17 +46534,22 @@ function tokenize(source, alternateCommentMode) {
      */
     function cmnt(trailingLine) {
         var ret = null;
+        var comment;
         if (trailingLine === undefined) {
-            if (commentLine === line - 1 && (alternateCommentMode || commentType === "*" || commentLineEmpty)) {
-                ret = commentIsLeading ? commentText : null;
+            comment = comments[line - 1];
+            delete comments[line - 1];
+            if (comment && (alternateCommentMode || comment.type === "*" || comment.lineEmpty)) {
+                ret = comment.leading ? comment.text : null;
             }
         } else {
             /* istanbul ignore else */
-            if (commentLine < trailingLine) {
+            if (lastCommentLine < trailingLine) {
                 peek();
             }
-            if (commentLine === trailingLine && !commentLineEmpty && (alternateCommentMode || commentType === "/")) {
-                ret = commentIsLeading ? null : commentText;
+            comment = comments[trailingLine];
+            delete comments[trailingLine];
+            if (comment && !comment.lineEmpty && (alternateCommentMode || comment.type === "/")) {
+                ret = comment.leading ? null : comment.text;
             }
         }
         return ret;
@@ -45493,7 +47553,7 @@ util.decorateEnum = function decorateEnum(object) {
 util.setProperty = function setProperty(dst, path, value) {
     function setProp(dst, path, value) {
         var part = path.shift();
-        if (part === "__proto__") {
+        if (part === "__proto__" || part === "prototype") {
           return dst;
         }
         if (path.length > 0) {
@@ -46025,13 +48085,30 @@ function newError(name) {
             merge(this, properties);
     }
 
-    (CustomError.prototype = Object.create(Error.prototype)).constructor = CustomError;
-
-    Object.defineProperty(CustomError.prototype, "name", { get: function() { return name; } });
-
-    CustomError.prototype.toString = function toString() {
-        return this.name + ": " + this.message;
-    };
+    CustomError.prototype = Object.create(Error.prototype, {
+        constructor: {
+            value: CustomError,
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        },
+        name: {
+            get: function get() { return name; },
+            set: undefined,
+            enumerable: false,
+            // configurable: false would accurately preserve the behavior of
+            // the original, but I'm guessing that was not intentional.
+            // For an actual error subclass, this property would
+            // be configurable.
+            configurable: true,
+        },
+        toString: {
+            value: function value() { return this.name + ": " + this.message; },
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        },
+    });
 
     return CustomError;
 }
@@ -46407,7 +48484,7 @@ wrappers[".google.protobuf.Any"] = {
             if (type) {
                 // type_url does not accept leading "."
                 var type_url = object["@type"].charAt(0) === "." ?
-                    object["@type"].substr(1) : object["@type"];
+                    object["@type"].slice(1) : object["@type"];
                 // type_url prefix is optional, but path seperator is required
                 if (type_url.indexOf("/") === -1) {
                     type_url = "/" + type_url;
@@ -46445,7 +48522,7 @@ wrappers[".google.protobuf.Any"] = {
         if (!(message instanceof this.ctor) && message instanceof Message) {
             var object = message.$type.toObject(message, options);
             var messageName = message.$type.fullName[0] === "." ?
-                message.$type.fullName.substr(1) : message.$type.fullName;
+                message.$type.fullName.slice(1) : message.$type.fullName;
             // Default to type.googleapis.com prefix if no prefix is used
             if (prefix === "") {
                 prefix = googleApi;
@@ -47031,6 +49108,7 @@ BufferWriter._configure();
 /***/ 1867:
 /***/ ((module, exports, __nccwpck_require__) => {
 
+/*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
 /* eslint-disable node/no-deprecated-api */
 var buffer = __nccwpck_require__(4300)
 var Buffer = buffer.Buffer
@@ -47052,6 +49130,8 @@ if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow)
 function SafeBuffer (arg, encodingOrOffset, length) {
   return Buffer(arg, encodingOrOffset, length)
 }
+
+SafeBuffer.prototype = Object.create(Buffer.prototype)
 
 // Copy static methods from Buffer
 copyProps(Buffer, SafeBuffer)
@@ -48250,7 +50330,7 @@ exports["default"] = _default;
 /***/ (function(__unused_webpack_module, exports) {
 
 /**
- * web-streams-polyfill v3.2.0
+ * web-streams-polyfill v3.2.1
  */
 (function (global, factory) {
      true ? factory(exports) :
@@ -51952,10 +54032,16 @@ exports["default"] = _default;
     const byteLengthSizeFunction = (chunk) => {
         return chunk.byteLength;
     };
-    Object.defineProperty(byteLengthSizeFunction, 'name', {
-        value: 'size',
-        configurable: true
-    });
+    try {
+        Object.defineProperty(byteLengthSizeFunction, 'name', {
+            value: 'size',
+            configurable: true
+        });
+    }
+    catch (_a) {
+        // This property is non-configurable in older browsers, so ignore if this throws.
+        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/name#browser_compatibility
+    }
     /**
      * A queuing strategy that counts the number of bytes in each chunk.
      *
@@ -52014,10 +54100,16 @@ exports["default"] = _default;
     const countSizeFunction = () => {
         return 1;
     };
-    Object.defineProperty(countSizeFunction, 'name', {
-        value: 'size',
-        configurable: true
-    });
+    try {
+        Object.defineProperty(countSizeFunction, 'name', {
+            value: 'size',
+            configurable: true
+        });
+    }
+    catch (_a) {
+        // This property is non-configurable in older browsers, so ignore if this throws.
+        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/name#browser_compatibility
+    }
     /**
      * A queuing strategy that counts the number of chunks.
      *
@@ -52671,7 +54763,519 @@ try {
 
 /***/ }),
 
-/***/ 401:
+/***/ 3213:
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
+
+"use strict";
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   "Z": () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+/* unused harmony export File */
+/* harmony import */ var _index_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(1410);
+
+
+const _File = class File extends _index_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .Z {
+  #lastModified = 0
+  #name = ''
+
+  /**
+   * @param {*[]} fileBits
+   * @param {string} fileName
+   * @param {{lastModified?: number, type?: string}} options
+   */// @ts-ignore
+  constructor (fileBits, fileName, options = {}) {
+    if (arguments.length < 2) {
+      throw new TypeError(`Failed to construct 'File': 2 arguments required, but only ${arguments.length} present.`)
+    }
+    super(fileBits, options)
+
+    if (options === null) options = {}
+
+    // Simulate WebIDL type casting for NaN value in lastModified option.
+    const lastModified = options.lastModified === undefined ? Date.now() : Number(options.lastModified)
+    if (!Number.isNaN(lastModified)) {
+      this.#lastModified = lastModified
+    }
+
+    this.#name = String(fileName)
+  }
+
+  get name () {
+    return this.#name
+  }
+
+  get lastModified () {
+    return this.#lastModified
+  }
+
+  get [Symbol.toStringTag] () {
+    return 'File'
+  }
+
+  static [Symbol.hasInstance] (object) {
+    return !!object && object instanceof _index_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .Z &&
+      /^(File)$/.test(object[Symbol.toStringTag])
+  }
+}
+
+/** @type {typeof globalThis.File} */// @ts-ignore
+const File = _File
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (File);
+
+
+/***/ }),
+
+/***/ 2777:
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
+
+"use strict";
+
+// EXPORTS
+__nccwpck_require__.d(__webpack_exports__, {
+  "t6": () => (/* reexport */ fetch_blob/* default */.Z),
+  "$B": () => (/* reexport */ file/* default */.Z),
+  "xB": () => (/* binding */ blobFrom),
+  "SX": () => (/* binding */ blobFromSync),
+  "e2": () => (/* binding */ fileFrom),
+  "RA": () => (/* binding */ fileFromSync)
+});
+
+// UNUSED EXPORTS: default
+
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = require("node:fs");
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = require("node:path");
+// EXTERNAL MODULE: ./node_modules/node-domexception/index.js
+var node_domexception = __nccwpck_require__(7760);
+// EXTERNAL MODULE: ./node_modules/fetch-blob/file.js
+var file = __nccwpck_require__(3213);
+// EXTERNAL MODULE: ./node_modules/fetch-blob/index.js
+var fetch_blob = __nccwpck_require__(1410);
+;// CONCATENATED MODULE: ./node_modules/fetch-blob/from.js
+
+
+
+
+
+
+
+const { stat } = external_node_fs_namespaceObject.promises
+
+/**
+ * @param {string} path filepath on the disk
+ * @param {string} [type] mimetype to use
+ */
+const blobFromSync = (path, type) => fromBlob((0,external_node_fs_namespaceObject.statSync)(path), path, type)
+
+/**
+ * @param {string} path filepath on the disk
+ * @param {string} [type] mimetype to use
+ * @returns {Promise<Blob>}
+ */
+const blobFrom = (path, type) => stat(path).then(stat => fromBlob(stat, path, type))
+
+/**
+ * @param {string} path filepath on the disk
+ * @param {string} [type] mimetype to use
+ * @returns {Promise<File>}
+ */
+const fileFrom = (path, type) => stat(path).then(stat => fromFile(stat, path, type))
+
+/**
+ * @param {string} path filepath on the disk
+ * @param {string} [type] mimetype to use
+ */
+const fileFromSync = (path, type) => fromFile((0,external_node_fs_namespaceObject.statSync)(path), path, type)
+
+// @ts-ignore
+const fromBlob = (stat, path, type = '') => new fetch_blob/* default */.Z([new BlobDataItem({
+  path,
+  size: stat.size,
+  lastModified: stat.mtimeMs,
+  start: 0
+})], { type })
+
+// @ts-ignore
+const fromFile = (stat, path, type = '') => new file/* default */.Z([new BlobDataItem({
+  path,
+  size: stat.size,
+  lastModified: stat.mtimeMs,
+  start: 0
+})], (0,external_node_path_namespaceObject.basename)(path), { type, lastModified: stat.mtimeMs })
+
+/**
+ * This is a blob backed up by a file on the disk
+ * with minium requirement. Its wrapped around a Blob as a blobPart
+ * so you have no direct access to this.
+ *
+ * @private
+ */
+class BlobDataItem {
+  #path
+  #start
+
+  constructor (options) {
+    this.#path = options.path
+    this.#start = options.start
+    this.size = options.size
+    this.lastModified = options.lastModified
+  }
+
+  /**
+   * Slicing arguments is first validated and formatted
+   * to not be out of range by Blob.prototype.slice
+   */
+  slice (start, end) {
+    return new BlobDataItem({
+      path: this.#path,
+      lastModified: this.lastModified,
+      size: end - start,
+      start: this.#start + start
+    })
+  }
+
+  async * stream () {
+    const { mtimeMs } = await stat(this.#path)
+    if (mtimeMs > this.lastModified) {
+      throw new node_domexception('The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.', 'NotReadableError')
+    }
+    yield * (0,external_node_fs_namespaceObject.createReadStream)(this.#path, {
+      start: this.#start,
+      end: this.#start + this.size - 1
+    })
+  }
+
+  get [Symbol.toStringTag] () {
+    return 'Blob'
+  }
+}
+
+/* harmony default export */ const from = ((/* unused pure expression or super */ null && (blobFromSync)));
+
+
+
+/***/ }),
+
+/***/ 1410:
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
+
+"use strict";
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   "Z": () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+/* unused harmony export Blob */
+/* harmony import */ var _streams_cjs__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(8572);
+/*! fetch-blob. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
+
+// TODO (jimmywarting): in the feature use conditional loading with top level await (requires 14.x)
+// Node has recently added whatwg stream into core
+
+
+
+// 64 KiB (same size chrome slice theirs blob into Uint8array's)
+const POOL_SIZE = 65536
+
+/** @param {(Blob | Uint8Array)[]} parts */
+async function * toIterator (parts, clone = true) {
+  for (const part of parts) {
+    if ('stream' in part) {
+      yield * (/** @type {AsyncIterableIterator<Uint8Array>} */ (part.stream()))
+    } else if (ArrayBuffer.isView(part)) {
+      if (clone) {
+        let position = part.byteOffset
+        const end = part.byteOffset + part.byteLength
+        while (position !== end) {
+          const size = Math.min(end - position, POOL_SIZE)
+          const chunk = part.buffer.slice(position, position + size)
+          position += chunk.byteLength
+          yield new Uint8Array(chunk)
+        }
+      } else {
+        yield part
+      }
+    /* c8 ignore next 10 */
+    } else {
+      // For blobs that have arrayBuffer but no stream method (nodes buffer.Blob)
+      let position = 0, b = (/** @type {Blob} */ (part))
+      while (position !== b.size) {
+        const chunk = b.slice(position, Math.min(b.size, position + POOL_SIZE))
+        const buffer = await chunk.arrayBuffer()
+        position += buffer.byteLength
+        yield new Uint8Array(buffer)
+      }
+    }
+  }
+}
+
+const _Blob = class Blob {
+  /** @type {Array.<(Blob|Uint8Array)>} */
+  #parts = []
+  #type = ''
+  #size = 0
+  #endings = 'transparent'
+
+  /**
+   * The Blob() constructor returns a new Blob object. The content
+   * of the blob consists of the concatenation of the values given
+   * in the parameter array.
+   *
+   * @param {*} blobParts
+   * @param {{ type?: string, endings?: string }} [options]
+   */
+  constructor (blobParts = [], options = {}) {
+    if (typeof blobParts !== 'object' || blobParts === null) {
+      throw new TypeError('Failed to construct \'Blob\': The provided value cannot be converted to a sequence.')
+    }
+
+    if (typeof blobParts[Symbol.iterator] !== 'function') {
+      throw new TypeError('Failed to construct \'Blob\': The object must have a callable @@iterator property.')
+    }
+
+    if (typeof options !== 'object' && typeof options !== 'function') {
+      throw new TypeError('Failed to construct \'Blob\': parameter 2 cannot convert to dictionary.')
+    }
+
+    if (options === null) options = {}
+
+    const encoder = new TextEncoder()
+    for (const element of blobParts) {
+      let part
+      if (ArrayBuffer.isView(element)) {
+        part = new Uint8Array(element.buffer.slice(element.byteOffset, element.byteOffset + element.byteLength))
+      } else if (element instanceof ArrayBuffer) {
+        part = new Uint8Array(element.slice(0))
+      } else if (element instanceof Blob) {
+        part = element
+      } else {
+        part = encoder.encode(`${element}`)
+      }
+
+      this.#size += ArrayBuffer.isView(part) ? part.byteLength : part.size
+      this.#parts.push(part)
+    }
+
+    this.#endings = `${options.endings === undefined ? 'transparent' : options.endings}`
+    const type = options.type === undefined ? '' : String(options.type)
+    this.#type = /^[\x20-\x7E]*$/.test(type) ? type : ''
+  }
+
+  /**
+   * The Blob interface's size property returns the
+   * size of the Blob in bytes.
+   */
+  get size () {
+    return this.#size
+  }
+
+  /**
+   * The type property of a Blob object returns the MIME type of the file.
+   */
+  get type () {
+    return this.#type
+  }
+
+  /**
+   * The text() method in the Blob interface returns a Promise
+   * that resolves with a string containing the contents of
+   * the blob, interpreted as UTF-8.
+   *
+   * @return {Promise<string>}
+   */
+  async text () {
+    // More optimized than using this.arrayBuffer()
+    // that requires twice as much ram
+    const decoder = new TextDecoder()
+    let str = ''
+    for await (const part of toIterator(this.#parts, false)) {
+      str += decoder.decode(part, { stream: true })
+    }
+    // Remaining
+    str += decoder.decode()
+    return str
+  }
+
+  /**
+   * The arrayBuffer() method in the Blob interface returns a
+   * Promise that resolves with the contents of the blob as
+   * binary data contained in an ArrayBuffer.
+   *
+   * @return {Promise<ArrayBuffer>}
+   */
+  async arrayBuffer () {
+    // Easier way... Just a unnecessary overhead
+    // const view = new Uint8Array(this.size);
+    // await this.stream().getReader({mode: 'byob'}).read(view);
+    // return view.buffer;
+
+    const data = new Uint8Array(this.size)
+    let offset = 0
+    for await (const chunk of toIterator(this.#parts, false)) {
+      data.set(chunk, offset)
+      offset += chunk.length
+    }
+
+    return data.buffer
+  }
+
+  stream () {
+    const it = toIterator(this.#parts, true)
+
+    return new globalThis.ReadableStream({
+      // @ts-ignore
+      type: 'bytes',
+      async pull (ctrl) {
+        const chunk = await it.next()
+        chunk.done ? ctrl.close() : ctrl.enqueue(chunk.value)
+      },
+
+      async cancel () {
+        await it.return()
+      }
+    })
+  }
+
+  /**
+   * The Blob interface's slice() method creates and returns a
+   * new Blob object which contains data from a subset of the
+   * blob on which it's called.
+   *
+   * @param {number} [start]
+   * @param {number} [end]
+   * @param {string} [type]
+   */
+  slice (start = 0, end = this.size, type = '') {
+    const { size } = this
+
+    let relativeStart = start < 0 ? Math.max(size + start, 0) : Math.min(start, size)
+    let relativeEnd = end < 0 ? Math.max(size + end, 0) : Math.min(end, size)
+
+    const span = Math.max(relativeEnd - relativeStart, 0)
+    const parts = this.#parts
+    const blobParts = []
+    let added = 0
+
+    for (const part of parts) {
+      // don't add the overflow to new blobParts
+      if (added >= span) {
+        break
+      }
+
+      const size = ArrayBuffer.isView(part) ? part.byteLength : part.size
+      if (relativeStart && size <= relativeStart) {
+        // Skip the beginning and change the relative
+        // start & end position as we skip the unwanted parts
+        relativeStart -= size
+        relativeEnd -= size
+      } else {
+        let chunk
+        if (ArrayBuffer.isView(part)) {
+          chunk = part.subarray(relativeStart, Math.min(size, relativeEnd))
+          added += chunk.byteLength
+        } else {
+          chunk = part.slice(relativeStart, Math.min(size, relativeEnd))
+          added += chunk.size
+        }
+        relativeEnd -= size
+        blobParts.push(chunk)
+        relativeStart = 0 // All next sequential parts should start at 0
+      }
+    }
+
+    const blob = new Blob([], { type: String(type).toLowerCase() })
+    blob.#size = span
+    blob.#parts = blobParts
+
+    return blob
+  }
+
+  get [Symbol.toStringTag] () {
+    return 'Blob'
+  }
+
+  static [Symbol.hasInstance] (object) {
+    return (
+      object &&
+      typeof object === 'object' &&
+      typeof object.constructor === 'function' &&
+      (
+        typeof object.stream === 'function' ||
+        typeof object.arrayBuffer === 'function'
+      ) &&
+      /^(Blob|File)$/.test(object[Symbol.toStringTag])
+    )
+  }
+}
+
+Object.defineProperties(_Blob.prototype, {
+  size: { enumerable: true },
+  type: { enumerable: true },
+  slice: { enumerable: true }
+})
+
+/** @type {typeof globalThis.Blob} */
+const Blob = _Blob
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (Blob);
+
+
+/***/ }),
+
+/***/ 8010:
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
+
+"use strict";
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   "Ct": () => (/* binding */ FormData),
+/* harmony export */   "au": () => (/* binding */ formDataToBlob)
+/* harmony export */ });
+/* unused harmony export File */
+/* harmony import */ var fetch_blob__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(1410);
+/* harmony import */ var fetch_blob_file_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(3213);
+/*! formdata-polyfill. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
+
+
+
+
+var {toStringTag:t,iterator:i,hasInstance:h}=Symbol,
+r=Math.random,
+m='append,set,get,getAll,delete,keys,values,entries,forEach,constructor'.split(','),
+f=(a,b,c)=>(a+='',/^(Blob|File)$/.test(b && b[t])?[(c=c!==void 0?c+'':b[t]=='File'?b.name:'blob',a),b.name!==c||b[t]=='blob'?new fetch_blob_file_js__WEBPACK_IMPORTED_MODULE_1__/* ["default"] */ .Z([b],c,b):b]:[a,b+'']),
+e=(c,f)=>(f?c:c.replace(/\r?\n|\r/g,'\r\n')).replace(/\n/g,'%0A').replace(/\r/g,'%0D').replace(/"/g,'%22'),
+x=(n, a, e)=>{if(a.length<e){throw new TypeError(`Failed to execute '${n}' on 'FormData': ${e} arguments required, but only ${a.length} present.`)}}
+
+const File = (/* unused pure expression or super */ null && (F))
+
+/** @type {typeof globalThis.FormData} */
+const FormData = class FormData {
+#d=[];
+constructor(...a){if(a.length)throw new TypeError(`Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.`)}
+get [t]() {return 'FormData'}
+[i](){return this.entries()}
+static [h](o) {return o&&typeof o==='object'&&o[t]==='FormData'&&!m.some(m=>typeof o[m]!='function')}
+append(...a){x('append',arguments,2);this.#d.push(f(...a))}
+delete(a){x('delete',arguments,1);a+='';this.#d=this.#d.filter(([b])=>b!==a)}
+get(a){x('get',arguments,1);a+='';for(var b=this.#d,l=b.length,c=0;c<l;c++)if(b[c][0]===a)return b[c][1];return null}
+getAll(a,b){x('getAll',arguments,1);b=[];a+='';this.#d.forEach(c=>c[0]===a&&b.push(c[1]));return b}
+has(a){x('has',arguments,1);a+='';return this.#d.some(b=>b[0]===a)}
+forEach(a,b){x('forEach',arguments,1);for(var [c,d]of this)a.call(b,d,c,this)}
+set(...a){x('set',arguments,2);var b=[],c=!0;a=f(...a);this.#d.forEach(d=>{d[0]===a[0]?c&&(c=!b.push(a)):b.push(d)});c&&b.push(a);this.#d=b}
+*entries(){yield*this.#d}
+*keys(){for(var[a]of this)yield a}
+*values(){for(var[,a]of this)yield a}}
+
+/** @param {FormData} F */
+function formDataToBlob (F,B=fetch_blob__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .Z){
+var b=`${r()}${r()}`.replace(/\./g, '').slice(-28).padStart(32, '-'),c=[],p=`--${b}\r\nContent-Disposition: form-data; name="`
+F.forEach((v,n)=>typeof v=='string'
+?c.push(p+e(n)+`"\r\n\r\n${v.replace(/\r(?!\n)|(?<!\r)\n/g, '\r\n')}\r\n`)
+:c.push(p+e(n)+`"; filename="${e(v.name, 1)}"\r\nContent-Type: ${v.type||"application/octet-stream"}\r\n\r\n`, v, '\r\n'))
+c.push(`--${b}--`)
+return new B(c,{type:"multipart/form-data; boundary="+b})}
+
+
+/***/ }),
+
+/***/ 4429:
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
 
 "use strict";
@@ -52735,7 +55339,7 @@ function dataUriToBuffer(uri) {
         if (meta[i] === 'base64') {
             base64 = true;
         }
-        else {
+        else if (meta[i]) {
             typeFull += `;${meta[i]}`;
             if (meta[i].indexOf('charset=') === 0) {
                 charset = meta[i].substring(8);
@@ -52766,7 +55370,7 @@ const external_node_util_namespaceObject = require("node:util");
 var fetch_blob = __nccwpck_require__(1410);
 // EXTERNAL MODULE: ./node_modules/formdata-polyfill/esm.min.js
 var esm_min = __nccwpck_require__(8010);
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/errors/base.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/errors/base.js
 class FetchBaseError extends Error {
 	constructor(message, type) {
 		super(message);
@@ -52785,7 +55389,7 @@ class FetchBaseError extends Error {
 	}
 }
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/errors/fetch-error.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/errors/fetch-error.js
 
 
 
@@ -52813,7 +55417,7 @@ class FetchError extends FetchBaseError {
 	}
 }
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/utils/is.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/utils/is.js
 /**
  * Is.js
  *
@@ -52902,7 +55506,7 @@ const isSameProtocol = (destination, original) => {
 	return orig === dest;
 };
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/body.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/body.js
 
 /**
  * Body.js
@@ -53026,7 +55630,7 @@ class Body {
 			return formData;
 		}
 
-		const {toFormData} = await __nccwpck_require__.e(/* import() */ 356).then(__nccwpck_require__.bind(__nccwpck_require__, 7356));
+		const {toFormData} = await __nccwpck_require__.e(/* import() */ 37).then(__nccwpck_require__.bind(__nccwpck_require__, 4037));
 		return toFormData(this.body, ct);
 	}
 
@@ -53301,7 +55905,7 @@ const writeToStream = async (dest, {body}) => {
 	}
 };
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/headers.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/headers.js
 /**
  * Headers.js
  *
@@ -53570,7 +56174,7 @@ function fromRawHeaders(headers = []) {
 	);
 }
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/utils/is-redirect.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/utils/is-redirect.js
 const redirectStatus = new Set([301, 302, 303, 307, 308]);
 
 /**
@@ -53583,7 +56187,7 @@ const isRedirect = code => {
 	return redirectStatus.has(code);
 };
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/response.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/response.js
 /**
  * Response.js
  *
@@ -53747,7 +56351,7 @@ Object.defineProperties(Response.prototype, {
 
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = require("node:url");
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/utils/get-search.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/utils/get-search.js
 const getSearch = parsedURL => {
 	if (parsedURL.search) {
 		return parsedURL.search;
@@ -53760,7 +56364,7 @@ const getSearch = parsedURL => {
 
 ;// CONCATENATED MODULE: external "node:net"
 const external_node_net_namespaceObject = require("node:net");
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/utils/referrer.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/utils/referrer.js
 
 
 /**
@@ -54102,7 +56706,7 @@ function parseReferrerPolicyFromHeader(headers) {
 	return policy;
 }
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/request.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/request.js
 /**
  * Request.js
  *
@@ -54391,10 +56995,6 @@ const getNodeRequestOptions = request => {
 		agent = agent(parsedURL);
 	}
 
-	if (!headers.has('Connection') && !agent) {
-		headers.set('Connection', 'close');
-	}
-
 	// HTTP-network fetch step 4.2
 	// chunked encoding is handled by Node.js
 
@@ -54419,7 +57019,7 @@ const getNodeRequestOptions = request => {
 	};
 };
 
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/errors/abort-error.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/errors/abort-error.js
 
 
 /**
@@ -54433,7 +57033,7 @@ class AbortError extends FetchBaseError {
 
 // EXTERNAL MODULE: ./node_modules/fetch-blob/from.js + 2 modules
 var from = __nccwpck_require__(2777);
-;// CONCATENATED MODULE: ./node_modules/@nikolay.matrosov/yc-ts-sdk/node_modules/node-fetch/src/index.js
+;// CONCATENATED MODULE: ./node_modules/node-fetch/src/index.js
 /**
  * Index.js
  *
@@ -54848,533 +57448,11 @@ function fixResponseChunkedTransferBadEnding(request, errorCallback) {
 
 /***/ }),
 
-/***/ 3213:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
-
-"use strict";
-/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   "Z": () => (__WEBPACK_DEFAULT_EXPORT__)
-/* harmony export */ });
-/* unused harmony export File */
-/* harmony import */ var _index_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(1410);
-
-
-const _File = class File extends _index_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .Z {
-  #lastModified = 0
-  #name = ''
-
-  /**
-   * @param {*[]} fileBits
-   * @param {string} fileName
-   * @param {{lastModified?: number, type?: string}} options
-   */// @ts-ignore
-  constructor (fileBits, fileName, options = {}) {
-    if (arguments.length < 2) {
-      throw new TypeError(`Failed to construct 'File': 2 arguments required, but only ${arguments.length} present.`)
-    }
-    super(fileBits, options)
-
-    if (options === null) options = {}
-
-    // Simulate WebIDL type casting for NaN value in lastModified option.
-    const lastModified = options.lastModified === undefined ? Date.now() : Number(options.lastModified)
-    if (!Number.isNaN(lastModified)) {
-      this.#lastModified = lastModified
-    }
-
-    this.#name = String(fileName)
-  }
-
-  get name () {
-    return this.#name
-  }
-
-  get lastModified () {
-    return this.#lastModified
-  }
-
-  get [Symbol.toStringTag] () {
-    return 'File'
-  }
-
-  static [Symbol.hasInstance] (object) {
-    return !!object && object instanceof _index_js__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .Z &&
-      /^(File)$/.test(object[Symbol.toStringTag])
-  }
-}
-
-/** @type {typeof globalThis.File} */// @ts-ignore
-const File = _File
-/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (File);
-
-
-/***/ }),
-
-/***/ 2777:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
-
-"use strict";
-
-// EXPORTS
-__nccwpck_require__.d(__webpack_exports__, {
-  "t6": () => (/* reexport */ fetch_blob/* default */.Z),
-  "$B": () => (/* reexport */ file/* default */.Z),
-  "xB": () => (/* binding */ blobFrom),
-  "SX": () => (/* binding */ blobFromSync),
-  "e2": () => (/* binding */ fileFrom),
-  "RA": () => (/* binding */ fileFromSync)
-});
-
-// UNUSED EXPORTS: default
-
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = require("node:fs");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = require("node:path");
-// EXTERNAL MODULE: ./node_modules/node-domexception/index.js
-var node_domexception = __nccwpck_require__(7760);
-// EXTERNAL MODULE: ./node_modules/fetch-blob/file.js
-var file = __nccwpck_require__(3213);
-// EXTERNAL MODULE: ./node_modules/fetch-blob/index.js
-var fetch_blob = __nccwpck_require__(1410);
-;// CONCATENATED MODULE: ./node_modules/fetch-blob/from.js
-
-
-
-
-
-
-
-const { stat } = external_node_fs_namespaceObject.promises
-
-/**
- * @param {string} path filepath on the disk
- * @param {string} [type] mimetype to use
- */
-const blobFromSync = (path, type) => fromBlob((0,external_node_fs_namespaceObject.statSync)(path), path, type)
-
-/**
- * @param {string} path filepath on the disk
- * @param {string} [type] mimetype to use
- * @returns {Promise<Blob>}
- */
-const blobFrom = (path, type) => stat(path).then(stat => fromBlob(stat, path, type))
-
-/**
- * @param {string} path filepath on the disk
- * @param {string} [type] mimetype to use
- * @returns {Promise<File>}
- */
-const fileFrom = (path, type) => stat(path).then(stat => fromFile(stat, path, type))
-
-/**
- * @param {string} path filepath on the disk
- * @param {string} [type] mimetype to use
- */
-const fileFromSync = (path, type) => fromFile((0,external_node_fs_namespaceObject.statSync)(path), path, type)
-
-// @ts-ignore
-const fromBlob = (stat, path, type = '') => new fetch_blob/* default */.Z([new BlobDataItem({
-  path,
-  size: stat.size,
-  lastModified: stat.mtimeMs,
-  start: 0
-})], { type })
-
-// @ts-ignore
-const fromFile = (stat, path, type = '') => new file/* default */.Z([new BlobDataItem({
-  path,
-  size: stat.size,
-  lastModified: stat.mtimeMs,
-  start: 0
-})], (0,external_node_path_namespaceObject.basename)(path), { type, lastModified: stat.mtimeMs })
-
-/**
- * This is a blob backed up by a file on the disk
- * with minium requirement. Its wrapped around a Blob as a blobPart
- * so you have no direct access to this.
- *
- * @private
- */
-class BlobDataItem {
-  #path
-  #start
-
-  constructor (options) {
-    this.#path = options.path
-    this.#start = options.start
-    this.size = options.size
-    this.lastModified = options.lastModified
-    this.originalSize = options.originalSize === undefined
-      ? options.size
-      : options.originalSize
-  }
-
-  /**
-   * Slicing arguments is first validated and formatted
-   * to not be out of range by Blob.prototype.slice
-   */
-  slice (start, end) {
-    return new BlobDataItem({
-      path: this.#path,
-      lastModified: this.lastModified,
-      originalSize: this.originalSize,
-      size: end - start,
-      start: this.#start + start
-    })
-  }
-
-  async * stream () {
-    const { mtimeMs, size } = await stat(this.#path)
-
-    if (mtimeMs > this.lastModified || this.originalSize !== size) {
-      throw new node_domexception('The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.', 'NotReadableError')
-    }
-
-    yield * (0,external_node_fs_namespaceObject.createReadStream)(this.#path, {
-      start: this.#start,
-      end: this.#start + this.size - 1
-    })
-  }
-
-  get [Symbol.toStringTag] () {
-    return 'Blob'
-  }
-}
-
-/* harmony default export */ const from = ((/* unused pure expression or super */ null && (blobFromSync)));
-
-
-
-/***/ }),
-
-/***/ 1410:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
-
-"use strict";
-/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   "Z": () => (__WEBPACK_DEFAULT_EXPORT__)
-/* harmony export */ });
-/* unused harmony export Blob */
-/* harmony import */ var _streams_cjs__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(8572);
-/*! fetch-blob. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
-
-// TODO (jimmywarting): in the feature use conditional loading with top level await (requires 14.x)
-// Node has recently added whatwg stream into core
-
-
-
-// 64 KiB (same size chrome slice theirs blob into Uint8array's)
-const POOL_SIZE = 65536
-
-/** @param {(Blob | Uint8Array)[]} parts */
-async function * toIterator (parts, clone = true) {
-  for (const part of parts) {
-    if ('stream' in part) {
-      yield * (/** @type {AsyncIterableIterator<Uint8Array>} */ (part.stream()))
-    } else if (ArrayBuffer.isView(part)) {
-      if (clone) {
-        let position = part.byteOffset
-        const end = part.byteOffset + part.byteLength
-        while (position !== end) {
-          const size = Math.min(end - position, POOL_SIZE)
-          const chunk = part.buffer.slice(position, position + size)
-          position += chunk.byteLength
-          yield new Uint8Array(chunk)
-        }
-      } else {
-        yield part
-      }
-    /* c8 ignore next 10 */
-    } else {
-      // For blobs that have arrayBuffer but no stream method (nodes buffer.Blob)
-      let position = 0, b = (/** @type {Blob} */ (part))
-      while (position !== b.size) {
-        const chunk = b.slice(position, Math.min(b.size, position + POOL_SIZE))
-        const buffer = await chunk.arrayBuffer()
-        position += buffer.byteLength
-        yield new Uint8Array(buffer)
-      }
-    }
-  }
-}
-
-const _Blob = class Blob {
-  /** @type {Array.<(Blob|Uint8Array)>} */
-  #parts = []
-  #type = ''
-  #size = 0
-  #endings = 'transparent'
-
-  /**
-   * The Blob() constructor returns a new Blob object. The content
-   * of the blob consists of the concatenation of the values given
-   * in the parameter array.
-   *
-   * @param {*} blobParts
-   * @param {{ type?: string, endings?: string }} [options]
-   */
-  constructor (blobParts = [], options = {}) {
-    if (typeof blobParts !== 'object' || blobParts === null) {
-      throw new TypeError('Failed to construct \'Blob\': The provided value cannot be converted to a sequence.')
-    }
-
-    if (typeof blobParts[Symbol.iterator] !== 'function') {
-      throw new TypeError('Failed to construct \'Blob\': The object must have a callable @@iterator property.')
-    }
-
-    if (typeof options !== 'object' && typeof options !== 'function') {
-      throw new TypeError('Failed to construct \'Blob\': parameter 2 cannot convert to dictionary.')
-    }
-
-    if (options === null) options = {}
-
-    const encoder = new TextEncoder()
-    for (const element of blobParts) {
-      let part
-      if (ArrayBuffer.isView(element)) {
-        part = new Uint8Array(element.buffer.slice(element.byteOffset, element.byteOffset + element.byteLength))
-      } else if (element instanceof ArrayBuffer) {
-        part = new Uint8Array(element.slice(0))
-      } else if (element instanceof Blob) {
-        part = element
-      } else {
-        part = encoder.encode(`${element}`)
-      }
-
-      const size = ArrayBuffer.isView(part) ? part.byteLength : part.size
-      // Avoid pushing empty parts into the array to better GC them
-      if (size) {
-        this.#size += size
-        this.#parts.push(part)
-      }
-    }
-
-    this.#endings = `${options.endings === undefined ? 'transparent' : options.endings}`
-    const type = options.type === undefined ? '' : String(options.type)
-    this.#type = /^[\x20-\x7E]*$/.test(type) ? type : ''
-  }
-
-  /**
-   * The Blob interface's size property returns the
-   * size of the Blob in bytes.
-   */
-  get size () {
-    return this.#size
-  }
-
-  /**
-   * The type property of a Blob object returns the MIME type of the file.
-   */
-  get type () {
-    return this.#type
-  }
-
-  /**
-   * The text() method in the Blob interface returns a Promise
-   * that resolves with a string containing the contents of
-   * the blob, interpreted as UTF-8.
-   *
-   * @return {Promise<string>}
-   */
-  async text () {
-    // More optimized than using this.arrayBuffer()
-    // that requires twice as much ram
-    const decoder = new TextDecoder()
-    let str = ''
-    for await (const part of toIterator(this.#parts, false)) {
-      str += decoder.decode(part, { stream: true })
-    }
-    // Remaining
-    str += decoder.decode()
-    return str
-  }
-
-  /**
-   * The arrayBuffer() method in the Blob interface returns a
-   * Promise that resolves with the contents of the blob as
-   * binary data contained in an ArrayBuffer.
-   *
-   * @return {Promise<ArrayBuffer>}
-   */
-  async arrayBuffer () {
-    // Easier way... Just a unnecessary overhead
-    // const view = new Uint8Array(this.size);
-    // await this.stream().getReader({mode: 'byob'}).read(view);
-    // return view.buffer;
-
-    const data = new Uint8Array(this.size)
-    let offset = 0
-    for await (const chunk of toIterator(this.#parts, false)) {
-      data.set(chunk, offset)
-      offset += chunk.length
-    }
-
-    return data.buffer
-  }
-
-  stream () {
-    const it = toIterator(this.#parts, true)
-
-    return new globalThis.ReadableStream({
-      // @ts-ignore
-      type: 'bytes',
-      async pull (ctrl) {
-        const chunk = await it.next()
-        chunk.done ? ctrl.close() : ctrl.enqueue(chunk.value)
-      },
-
-      async cancel () {
-        await it.return()
-      }
-    })
-  }
-
-  /**
-   * The Blob interface's slice() method creates and returns a
-   * new Blob object which contains data from a subset of the
-   * blob on which it's called.
-   *
-   * @param {number} [start]
-   * @param {number} [end]
-   * @param {string} [type]
-   */
-  slice (start = 0, end = this.size, type = '') {
-    const { size } = this
-
-    let relativeStart = start < 0 ? Math.max(size + start, 0) : Math.min(start, size)
-    let relativeEnd = end < 0 ? Math.max(size + end, 0) : Math.min(end, size)
-
-    const span = Math.max(relativeEnd - relativeStart, 0)
-    const parts = this.#parts
-    const blobParts = []
-    let added = 0
-
-    for (const part of parts) {
-      // don't add the overflow to new blobParts
-      if (added >= span) {
-        break
-      }
-
-      const size = ArrayBuffer.isView(part) ? part.byteLength : part.size
-      if (relativeStart && size <= relativeStart) {
-        // Skip the beginning and change the relative
-        // start & end position as we skip the unwanted parts
-        relativeStart -= size
-        relativeEnd -= size
-      } else {
-        let chunk
-        if (ArrayBuffer.isView(part)) {
-          chunk = part.subarray(relativeStart, Math.min(size, relativeEnd))
-          added += chunk.byteLength
-        } else {
-          chunk = part.slice(relativeStart, Math.min(size, relativeEnd))
-          added += chunk.size
-        }
-        relativeEnd -= size
-        blobParts.push(chunk)
-        relativeStart = 0 // All next sequential parts should start at 0
-      }
-    }
-
-    const blob = new Blob([], { type: String(type).toLowerCase() })
-    blob.#size = span
-    blob.#parts = blobParts
-
-    return blob
-  }
-
-  get [Symbol.toStringTag] () {
-    return 'Blob'
-  }
-
-  static [Symbol.hasInstance] (object) {
-    return (
-      object &&
-      typeof object === 'object' &&
-      typeof object.constructor === 'function' &&
-      (
-        typeof object.stream === 'function' ||
-        typeof object.arrayBuffer === 'function'
-      ) &&
-      /^(Blob|File)$/.test(object[Symbol.toStringTag])
-    )
-  }
-}
-
-Object.defineProperties(_Blob.prototype, {
-  size: { enumerable: true },
-  type: { enumerable: true },
-  slice: { enumerable: true }
-})
-
-/** @type {typeof globalThis.Blob} */
-const Blob = _Blob
-/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (Blob);
-
-
-/***/ }),
-
-/***/ 8010:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
-
-"use strict";
-/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   "Ct": () => (/* binding */ FormData),
-/* harmony export */   "au": () => (/* binding */ formDataToBlob)
-/* harmony export */ });
-/* unused harmony export File */
-/* harmony import */ var fetch_blob__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(1410);
-/* harmony import */ var fetch_blob_file_js__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(3213);
-/*! formdata-polyfill. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
-
-
-
-
-var {toStringTag:t,iterator:i,hasInstance:h}=Symbol,
-r=Math.random,
-m='append,set,get,getAll,delete,keys,values,entries,forEach,constructor'.split(','),
-f=(a,b,c)=>(a+='',/^(Blob|File)$/.test(b && b[t])?[(c=c!==void 0?c+'':b[t]=='File'?b.name:'blob',a),b.name!==c||b[t]=='blob'?new fetch_blob_file_js__WEBPACK_IMPORTED_MODULE_1__/* ["default"] */ .Z([b],c,b):b]:[a,b+'']),
-e=(c,f)=>(f?c:c.replace(/\r?\n|\r/g,'\r\n')).replace(/\n/g,'%0A').replace(/\r/g,'%0D').replace(/"/g,'%22'),
-x=(n, a, e)=>{if(a.length<e){throw new TypeError(`Failed to execute '${n}' on 'FormData': ${e} arguments required, but only ${a.length} present.`)}}
-
-const File = (/* unused pure expression or super */ null && (F))
-
-/** @type {typeof globalThis.FormData} */
-const FormData = class FormData {
-#d=[];
-constructor(...a){if(a.length)throw new TypeError(`Failed to construct 'FormData': parameter 1 is not of type 'HTMLFormElement'.`)}
-get [t]() {return 'FormData'}
-[i](){return this.entries()}
-static [h](o) {return o&&typeof o==='object'&&o[t]==='FormData'&&!m.some(m=>typeof o[m]!='function')}
-append(...a){x('append',arguments,2);this.#d.push(f(...a))}
-delete(a){x('delete',arguments,1);a+='';this.#d=this.#d.filter(([b])=>b!==a)}
-get(a){x('get',arguments,1);a+='';for(var b=this.#d,l=b.length,c=0;c<l;c++)if(b[c][0]===a)return b[c][1];return null}
-getAll(a,b){x('getAll',arguments,1);b=[];a+='';this.#d.forEach(c=>c[0]===a&&b.push(c[1]));return b}
-has(a){x('has',arguments,1);a+='';return this.#d.some(b=>b[0]===a)}
-forEach(a,b){x('forEach',arguments,1);for(var [c,d]of this)a.call(b,d,c,this)}
-set(...a){x('set',arguments,2);var b=[],c=!0;a=f(...a);this.#d.forEach(d=>{d[0]===a[0]?c&&(c=!b.push(a)):b.push(d)});c&&b.push(a);this.#d=b}
-*entries(){yield*this.#d}
-*keys(){for(var[a]of this)yield a}
-*values(){for(var[,a]of this)yield a}}
-
-/** @param {FormData} F */
-function formDataToBlob (F,B=fetch_blob__WEBPACK_IMPORTED_MODULE_0__/* ["default"] */ .Z){
-var b=`${r()}${r()}`.replace(/\./g, '').slice(-28).padStart(32, '-'),c=[],p=`--${b}\r\nContent-Disposition: form-data; name="`
-F.forEach((v,n)=>typeof v=='string'
-?c.push(p+e(n)+`"\r\n\r\n${v.replace(/\r(?!\n)|(?<!\r)\n/g, '\r\n')}\r\n`)
-:c.push(p+e(n)+`"; filename="${e(v.name, 1)}"\r\nContent-Type: ${v.type||"application/octet-stream"}\r\n\r\n`, v, '\r\n'))
-c.push(`--${b}--`)
-return new B(c,{type:"multipart/form-data; boundary="+b})}
-
-
-/***/ }),
-
 /***/ 6569:
 /***/ ((module) => {
 
 "use strict";
-module.exports = {"i8":"1.6.2"};
+module.exports = {"i8":"1.9.0"};
 
 /***/ }),
 
