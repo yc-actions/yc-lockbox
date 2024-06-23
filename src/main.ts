@@ -1,8 +1,10 @@
 import * as core from '@actions/core';
-import {Session} from '@nikolay.matrosov/yc-ts-sdk';
-import {PayloadService} from '@nikolay.matrosov/yc-ts-sdk/lib/api/lockbox/v1';
-import {fromServiceAccountJsonFile} from '@nikolay.matrosov/yc-ts-sdk/lib/src/TokenService/iamTokenService';
-import {GetPayloadRequest} from '@nikolay.matrosov/yc-ts-sdk/lib/generated/yandex/cloud/lockbox/v1/payload_service';
+import {serviceClients, Session} from '@yandex-cloud/nodejs-sdk';
+import {
+  GetPayloadRequest,
+  PayloadServiceService,
+} from '@yandex-cloud/nodejs-sdk/dist/generated/yandex/cloud/lockbox/v1/payload_service';
+import {fromServiceAccountJsonFile} from './service-account-json';
 
 async function run(): Promise<void> {
   try {
@@ -21,7 +23,7 @@ async function run(): Promise<void> {
     core.info('Parsed Service account JSON');
 
     const session = new Session({serviceAccountJson});
-    const payloadService = PayloadService(session);
+    const payloadService = session.client<typeof PayloadServiceService>(serviceClients.PayloadServiceClient);
 
     const res = await payloadService.get(
       GetPayloadRequest.fromPartial({
