@@ -28,7 +28,7 @@ See [action.yml](action.yml) for the full documentation for this action's inputs
 
 ## Permissions
 
-To perform this action, it is required that the service account on behalf of which we are acting has granted the `cdn.editor` role or greater.
+To perform this action, it is required that the service account on behalf of which we are acting has granted the `lockbox.payloadViewer` role or greater.
 
 ## License Summary
 
