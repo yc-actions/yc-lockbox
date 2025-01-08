@@ -1,4 +1,4 @@
-import * as core from '@actions/core'
+import { info, getInput, setOutput, setSecret, error, setFailed } from '@actions/core'
 import { serviceClients, Session } from '@yandex-cloud/nodejs-sdk'
 import {
     GetPayloadRequest,
@@ -8,19 +8,19 @@ import { fromServiceAccountJsonFile } from './service-account-json'
 
 async function run(): Promise<void> {
     try {
-        core.info(`start`)
-        const ycSaJsonCredentials = core.getInput('yc-sa-json-credentials', {
+        info(`start`)
+        const ycSaJsonCredentials = getInput('yc-sa-json-credentials', {
             required: true
         })
 
-        const secretId = core.getInput('secret-id', {
+        const secretId = getInput('secret-id', {
             required: true
         })
 
-        const versionId = core.getInput('version-id')
+        const versionId = getInput('version-id')
 
         const serviceAccountJson = fromServiceAccountJsonFile(JSON.parse(ycSaJsonCredentials))
-        core.info('Parsed Service account JSON')
+        info('Parsed Service account JSON')
 
         const session = new Session({ serviceAccountJson })
         const payloadService = session.client<typeof PayloadServiceService>(serviceClients.PayloadServiceClient)
@@ -35,16 +35,16 @@ async function run(): Promise<void> {
         for (const entry of res.entries) {
             const { key, textValue, binaryValue } = entry
             const value = binaryValue !== undefined ? Buffer.from(binaryValue).toString('base64') : (textValue ?? '')
-            core.setOutput(key, value)
-            core.setSecret(value)
+            setOutput(key, value)
+            setSecret(value)
             keys.push(key)
         }
 
-        core.info(`Fetched values for ${keys.join(', ')}`)
-    } catch (error) {
-        if (error instanceof Error) {
-            core.error(error)
-            core.setFailed(error.message)
+        info(`Fetched values for ${keys.join(', ')}`)
+    } catch (err) {
+        if (err instanceof Error) {
+            error(err)
+            setFailed(err.message)
         }
     }
 }
