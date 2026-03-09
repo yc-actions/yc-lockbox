@@ -28,7 +28,7 @@
   "dependencies": {
     "@actions/core": "^2.0.2",
     "@actions/github": "^9.0.0",
-    "@yandex-cloud/nodejs-sdk": "^2.9.0"
+    "@yandex-cloud/nodejs-sdk": "^2.9.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.4",
