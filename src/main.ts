@@ -1,9 +1,6 @@
 import { info, getInput, setOutput, setSecret, error, setFailed } from '@actions/core'
-import { serviceClients, Session } from '@yandex-cloud/nodejs-sdk'
-import {
-    GetPayloadRequest,
-    PayloadServiceService
-} from '@yandex-cloud/nodejs-sdk/dist/generated/yandex/cloud/lockbox/v1/payload_service'
+import { Session } from '@yandex-cloud/nodejs-sdk'
+import { GetPayloadRequest, PayloadServiceClient } from '@yandex-cloud/nodejs-sdk/lockbox-v1/payload_service'
 import { fromServiceAccountJsonFile } from './service-account-json'
 
 async function run(): Promise<void> {
@@ -23,7 +20,7 @@ async function run(): Promise<void> {
         info('Parsed Service account JSON')
 
         const session = new Session({ serviceAccountJson })
-        const payloadService = session.client<typeof PayloadServiceService>(serviceClients.PayloadServiceClient)
+        const payloadService = session.client(PayloadServiceClient)
 
         const res = await payloadService.get(
             GetPayloadRequest.fromPartial({
